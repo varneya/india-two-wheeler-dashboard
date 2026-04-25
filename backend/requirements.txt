@@ -4,5 +4,8 @@ requests
 beautifulsoup4
 anthropic
 python-dotenv
-scikit-learn
 pdfplumber
+numpy
+scikit-learn
+hdbscan
+umap-learn

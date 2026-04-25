@@ -1,0 +1,302 @@
+# Setup & Dependencies
+
+This guide walks you through installing everything needed to run the India Two-Wheeler Dashboard locally — from the lightest setup (sales charts only) to the full stack (all five theming methods, including local LLM via Ollama).
+
+> **Tip:** if you only want to browse the data and don't care about LLM/ML theme analysis, you can skip Sections 5 and 6 entirely.
+
+---
+
+## What do you actually need?
+
+Pick the row that matches what you want and install only those sections.
+
+| You want to... | Sections needed |
+|---|---|
+| Browse sales charts, reviews, FADA data | 1, 2, 3, 4 |
+| Run keyword / TF-IDF theming | 1, 2, 3, 4 |
+| Run semantic / BERTopic theming (local embeddings) | 1, 2, 3, 4, **5** |
+| Run LLM theming on your machine | 1, 2, 3, 4, **5** |
+| Run LLM theming via Anthropic Claude | 1, 2, 3, 4, **6** |
+| **The full experience (all 5 methods)** | **1–6** |
+
+---
+
+## 1. System prerequisites
+
+| Tool | Minimum version | Check |
+|---|---|---|
+| **Python** | 3.10+ | `python3 --version` |
+| **Node.js** | 20+ | `node --version` |
+| **npm** | 10+ (ships with Node) | `npm --version` |
+| **Git** | any recent | `git --version` |
+
+### Install if missing
+
+**macOS** (recommended: [Homebrew](https://brew.sh))
+```bash
+brew install python@3.12 node git
+```
+
+**Ubuntu / Debian**
+```bash
+sudo apt update
+sudo apt install -y python3 python3-venv python3-pip nodejs npm git
+```
+
+**Windows** — install via [winget](https://learn.microsoft.com/en-us/windows/package-manager/winget/):
+```powershell
+winget install Python.Python.3.12 OpenJS.NodeJS Git.Git
+```
+
+---
+
+## 2. Clone the repository
+
+```bash
+git clone https://github.com/varneya/india-two-wheeler-dashboard.git
+cd india-two-wheeler-dashboard
+```
+
+---
+
+## 3. Backend (FastAPI + Python)
+
+### 3a. Create and activate a virtual environment
+
+```bash
+cd backend
+python3 -m venv venv
+source venv/bin/activate          # macOS / Linux
+# venv\Scripts\activate           # Windows PowerShell
+```
+
+### 3b. Install Python packages
+
+The bundled `requirements.txt` covers core deps. The full list (including ML deps used by `themes_semantic` and `themes_bertopic`) is:
+
+```bash
+pip install \
+  fastapi \
+  "uvicorn[standard]" \
+  requests \
+  beautifulsoup4 \
+  anthropic \
+  python-dotenv \
+  pdfplumber \
+  numpy \
+  scikit-learn \
+  hdbscan \
+  umap-learn
+```
+
+**Package roles:**
+
+| Package | Used by | Purpose |
+|---|---|---|
+| `fastapi` | `main.py` | HTTP API framework |
+| `uvicorn[standard]` | `main.py` | ASGI server |
+| `requests` | scrapers, themes_embeddings | HTTP client (RushLane, BikeWale, Ollama) |
+| `beautifulsoup4` | `scraper.py`, `reviews_scraper.py` | HTML parsing |
+| `anthropic` | `themes_llm.py` | Claude API client |
+| `python-dotenv` | `main.py` | Load `.env` |
+| `pdfplumber` | `fada_scraper.py` | Parse FADA monthly PDFs |
+| `numpy` | embeddings, clustering | Numerical arrays |
+| `scikit-learn` | `themes_tfidf.py`, fallback in semantic | TF-IDF, KMeans, silhouette |
+| `hdbscan` | `themes_semantic.py`, `themes_bertopic.py` | Density-based clustering |
+| `umap-learn` | `themes_bertopic.py` | Dimensionality reduction |
+
+> **Heads-up:** `hdbscan` and `umap-learn` compile native code on install. On macOS you may need Xcode CLI tools (`xcode-select --install`); on Ubuntu, `sudo apt install build-essential python3-dev`. On Windows, install the Microsoft C++ Build Tools.
+
+---
+
+## 4. Frontend (React + Vite)
+
+```bash
+cd ../frontend
+npm install
+```
+
+This pulls in everything from `package.json`:
+
+**Runtime dependencies:**
+- `react` 19, `react-dom` 19
+- `@tanstack/react-query` — server-state caching
+- `axios` — HTTP client
+- `recharts` — charts
+- `@radix-ui/*` (accordion, collapsible, dialog, tabs, slot) — accessible UI primitives
+- `cmdk` — ⌘K command palette
+- `lucide-react` — icons
+- `sonner` — toast notifications
+
+**Dev dependencies:**
+- `vite` 8, `@vitejs/plugin-react`
+- `typescript` 6
+- `tailwindcss` 4, `@tailwindcss/vite`, `tw-animate-css`
+- `class-variance-authority`, `clsx`, `tailwind-merge` — Tailwind utilities
+- `eslint` 9, `eslint-plugin-react-hooks`, `eslint-plugin-react-refresh`, `typescript-eslint`
+- `@types/node`, `@types/react`, `@types/react-dom`
+
+---
+
+## 5. Optional — Local LLM via Ollama
+
+Required for: **semantic theming**, **BERTopic theming**, and the **LLM (Ollama backend)** option of the LLM theme method.
+
+### 5a. Install Ollama
+
+**macOS — easiest:** use the bundled installer script (auto-installs + pulls a default model + runs a smoke test):
+
+```bash
+chmod +x scripts/install_ollama.sh
+./scripts/install_ollama.sh                  # default: llama3.2:3b
+./scripts/install_ollama.sh mistral:7b       # or pick a model
+```
+
+**macOS — manual:**
+```bash
+brew install ollama
+```
+
+**Linux:**
+```bash
+curl -fsSL https://ollama.com/install.sh | sh
+```
+
+**Windows:** download the installer from <https://ollama.com/download>.
+
+### 5b. Start the server
+
+```bash
+ollama serve                                  # foreground
+# OR (macOS Homebrew install)
+brew services start ollama                    # background, persists across reboots
+```
+
+Verify: `curl http://localhost:11434/api/tags` should return JSON.
+
+### 5c. Pull the models the dashboard uses
+
+```bash
+ollama pull nomic-embed-text                  # embeddings — required for semantic & BERTopic
+ollama pull mistral:7b                        # LLM — used by themes_llm + BERTopic naming
+```
+
+**Pick a chat model that fits your RAM:**
+
+| RAM | Recommended chat model | Size |
+|---|---|---|
+| 4 GB | `phi3:mini` | 2.2 GB |
+| 8 GB | `llama3.2:3b` or `mistral:7b` | 2–4 GB |
+| 16 GB | `llama3.1:8b` | 4.7 GB |
+| 32 GB+ | `mixtral:8x7b` | 26 GB |
+
+The dashboard's `/api/hardware` endpoint inspects your machine and recommends models automatically — visit the **Data Refresh** tab to see suggestions.
+
+### 5d. (Only if connecting to a hosted dashboard) Allow CORS
+
+If you're loading the dashboard from a public URL (e.g. `https://dashboard.example.com`) but want it to talk to the Ollama running on your laptop, start Ollama with the dashboard's origin allowlisted:
+
+```bash
+OLLAMA_ORIGINS="https://dashboard.example.com" ollama serve
+```
+
+Local-only setups don't need this — `localhost:5173` and `localhost:8000` are already allowed.
+
+---
+
+## 6. Optional — Anthropic Claude API
+
+Required only for: **LLM theming → backend = Claude**.
+
+1. Get an API key from <https://console.anthropic.com/settings/keys>
+2. Create `backend/.env`:
+
+```bash
+echo 'ANTHROPIC_API_KEY=sk-ant-...' > backend/.env
+```
+
+The backend uses the `claude-sonnet-4-6` model with prompt caching enabled. Cost is typically a few cents per analysis run.
+
+---
+
+## 7. Run the app
+
+Open two terminals:
+
+**Terminal 1 — backend (port 8000):**
+```bash
+cd backend
+source venv/bin/activate
+uvicorn main:app --reload --port 8000
+```
+
+**Terminal 2 — frontend (port 5173):**
+```bash
+cd frontend
+npm run dev
+```
+
+Then open <http://localhost:5173>.
+
+---
+
+## 8. Verify everything works
+
+| Check | Command / URL | Expected |
+|---|---|---|
+| Backend up | `curl http://localhost:8000/api/health` | `{"status":"ok"}` |
+| Hardware probe | `curl http://localhost:8000/api/hardware` | JSON with `chip`, `ram_gb`, `ollama.running` |
+| Ollama up | `curl http://localhost:11434/api/tags` | JSON list of pulled models |
+| Frontend up | <http://localhost:5173> | Dashboard loads with bike picker |
+| Embeddings | dashboard → Owner Insights → method = "Semantic" → run | Themes appear within ~30s |
+| LLM (Claude) | dashboard → Owner Insights → method = "LLM" → backend = Claude → run | Themes with sentiment + quotes |
+| LLM (Ollama) | dashboard → Owner Insights → method = "LLM" → backend = Ollama → run | Same, locally |
+
+First-time launch will show no data — click the **Data Refresh** tab and run a refresh to populate sales, reviews, and FADA data (~5–15 min).
+
+---
+
+## Method → dependency cheat-sheet
+
+| Method | Python deps beyond core | Local services |
+|---|---|---|
+| Keyword Rules | — | — |
+| TF-IDF + KMeans | `scikit-learn`, `numpy` | — |
+| Semantic Clustering | `scikit-learn`, `numpy`, `hdbscan` | Ollama + `nomic-embed-text` |
+| BERTopic | `scikit-learn`, `numpy`, `hdbscan`, `umap-learn` | Ollama + `nomic-embed-text` (+ a chat model for naming) |
+| LLM Analysis | `anthropic` (for Claude) | Ollama + a chat model (for local backend) |
+
+---
+
+## Troubleshooting
+
+**`ImportError: hdbscan` / `umap` not found**
+You skipped them in Section 3b. Re-run the full `pip install` block.
+
+**`hdbscan` install fails on macOS**
+Run `xcode-select --install`, then retry. If still failing, try `pip install hdbscan --no-build-isolation`.
+
+**Ollama returns `connection refused`**
+The server isn't running. Start it with `ollama serve` or `brew services start ollama`.
+
+**Browser blocks Ollama from a hosted dashboard**
+You forgot `OLLAMA_ORIGINS`. See Section 5d.
+
+**`ANTHROPIC_API_KEY` not picked up**
+Confirm `backend/.env` is in the `backend/` folder (not repo root) and that you restarted `uvicorn` after creating it.
+
+**Port already in use (`8000` or `5173`)**
+Find the offender: `lsof -ti :8000 | xargs kill` (macOS / Linux) or use `netstat -ano | findstr :8000` then `taskkill /PID <pid> /F` (Windows).
+
+---
+
+## Total install footprint (rough)
+
+| Component | Disk |
+|---|---|
+| Python venv + all backend packages | ~600 MB |
+| `node_modules/` | ~350 MB |
+| Ollama runtime | ~150 MB |
+| `nomic-embed-text` | 274 MB |
+| `mistral:7b` | 4.4 GB |
+| **Full stack** | **~6 GB** |
