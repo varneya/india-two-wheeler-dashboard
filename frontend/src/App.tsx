@@ -1,6 +1,7 @@
 import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query'
 import { Moon, Sun } from 'lucide-react'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
+import { API_BASE } from './api/client'
 import { fetchBikes } from './api/bikesApi'
 import { BikeCommandPalette } from './components/BikeCommandPalette'
 import { BikePicker } from './components/BikePicker'
@@ -11,6 +12,7 @@ import { RefreshButton } from './components/RefreshButton'
 import { RefreshTab } from './components/RefreshTab'
 import { SalesChart } from './components/SalesChart'
 import { SalesTable } from './components/SalesTable'
+import { SetupTab } from './components/SetupTab'
 import { StatusBanner } from './components/StatusBanner'
 import { SourceComparisonCard } from './components/SourceComparisonCard'
 import { Badge } from './components/ui/badge'
@@ -38,14 +40,17 @@ function brandIdFromBikeId(bikeId: string): string | null {
 
 const queryClient = new QueryClient()
 
-type Tab = 'sales' | 'insights' | 'compare' | 'refresh'
+type Tab = 'sales' | 'insights' | 'compare' | 'refresh' | 'setup'
 
 const TAB_LABELS: Record<Tab, string> = {
   sales: 'Sales Data',
   insights: 'Owner Insights',
   compare: 'Compare',
   refresh: 'Data Refresh',
+  setup: 'Setup',
 }
+
+const TAB_ORDER: Tab[] = ['sales', 'insights', 'compare', 'refresh', 'setup']
 
 function ThemeToggle() {
   const { theme, toggle } = useTheme()
@@ -66,6 +71,23 @@ function Dashboard() {
   const [tab, setTab] = useState<Tab>('sales')
   const { selectedBikeId } = useSelectedBike()
   const { sales, metrics, isLoading, isError } = useSalesData(selectedBikeId)
+
+  // On first load, probe the backend. If unreachable, jump to the Setup tab so
+  // visitors landing on the hosted page see install instructions instead of a
+  // broken-looking dashboard.
+  useEffect(() => {
+    let cancelled = false
+    fetch(`${API_BASE}/health`, { cache: 'no-store' })
+      .then(r => {
+        if (!cancelled && !r.ok) setTab('setup')
+      })
+      .catch(() => {
+        if (!cancelled) setTab('setup')
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   // Fetch the bikes list so we can show the selected bike's brand chip
   const { data: bikes = [] } = useQuery({ queryKey: ['bikes'], queryFn: fetchBikes })
@@ -108,7 +130,7 @@ function Dashboard() {
         {/* Tabs (Radix-backed) */}
         <Tabs value={tab} onValueChange={(v) => setTab(v as Tab)}>
           <TabsList>
-            {(['sales', 'insights', 'compare', 'refresh'] as Tab[]).map(t => (
+            {TAB_ORDER.map(t => (
               <TabsTrigger key={t} value={t}>
                 {TAB_LABELS[t]}
               </TabsTrigger>
@@ -120,7 +142,16 @@ function Dashboard() {
         {isError && tab === 'sales' && (
           <Card className="border-destructive/50 bg-destructive/10 py-3">
             <div className="px-6 text-destructive text-sm">
-              Could not connect to the backend. Make sure <code className="bg-destructive/20 px-1 rounded">uvicorn main:app</code> is running on port 8000.
+              Could not connect to the backend.{' '}
+              <button
+                type="button"
+                onClick={() => setTab('setup')}
+                className="underline font-medium hover:opacity-80"
+              >
+                Open the Setup tab
+              </button>{' '}
+              for install instructions, or run{' '}
+              <code className="bg-destructive/20 px-1 rounded">uvicorn main:app</code> on port 8000.
             </div>
           </Card>
         )}
@@ -177,6 +208,9 @@ function Dashboard() {
 
         {/* Data Refresh tab */}
         {tab === 'refresh' && <RefreshTab />}
+
+        {/* Setup tab */}
+        {tab === 'setup' && <SetupTab />}
       </div>
     </div>
   )

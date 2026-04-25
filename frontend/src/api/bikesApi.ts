@@ -1,7 +1,8 @@
 import axios from 'axios'
 import type { Bike, CompareResponse, DiscoveryStatus } from '../types/bikes'
+import { API_BASE } from './client'
 
-const api = axios.create({ baseURL: '/api' })
+const api = axios.create({ baseURL: API_BASE })
 
 export interface Brand {
   id: string

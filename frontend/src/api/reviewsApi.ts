@@ -1,7 +1,8 @@
 import axios from 'axios'
 import type { Review, ReviewSummary } from '../types/reviews'
+import { API_BASE } from './client'
 
-const api = axios.create({ baseURL: '/api' })
+const api = axios.create({ baseURL: API_BASE })
 
 export const fetchReviews = (bikeId: string): Promise<Review[]> =>
   api.get<Review[]>(`/bikes/${bikeId}/reviews`).then(r => r.data)

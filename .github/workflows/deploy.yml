@@ -34,7 +34,11 @@ jobs:
 
       - run: npm ci
 
-      - run: npm run build
+      - name: Build (points API at the visitor's localhost backend)
+        run: npm run build
+        env:
+          VITE_API_BASE: http://localhost:8000/api
+          VITE_OLLAMA_BASE: http://localhost:11434
 
       - uses: actions/configure-pages@v5
 

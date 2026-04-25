@@ -1,6 +1,5 @@
 import type { HardwareReport, ThemesResult, ThemesStatus } from '../types/themes'
-
-const BASE = '/api'
+import { API_BASE as BASE } from './client'
 
 export async function fetchHardware(): Promise<HardwareReport> {
   const res = await fetch(`${BASE}/hardware`)
