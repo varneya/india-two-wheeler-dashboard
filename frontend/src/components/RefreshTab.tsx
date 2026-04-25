@@ -1,0 +1,322 @@
+import { useQueryClient } from '@tanstack/react-query'
+import { Loader2, RefreshCw } from 'lucide-react'
+import { useEffect, useRef, useState } from 'react'
+import { toast } from 'sonner'
+import {
+  fetchRefreshAllStatus,
+  triggerRefreshAll,
+  type RefreshAllStatus,
+} from '../api/bikesApi'
+import { Badge } from './ui/badge'
+import { Button } from './ui/button'
+import { Card, CardContent } from './ui/card'
+
+function formatDuration(s: number | null): string {
+  if (!s || s < 1) return ''
+  if (s < 60) return `${Math.round(s)}s`
+  const mins = Math.floor(s / 60)
+  const secs = Math.round(s % 60)
+  return `${mins}m ${secs}s`
+}
+
+function formatRelative(iso: string | null): string {
+  if (!iso) return ''
+  const t = new Date(iso).getTime()
+  const diff = Math.max(0, Date.now() - t)
+  if (diff < 60_000) return `${Math.floor(diff / 1000)}s ago`
+  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)} minutes ago`
+  return new Date(iso).toLocaleString()
+}
+
+function ProgressBar({ percent, active }: { percent: number; active: boolean }) {
+  const safe = Math.max(0, Math.min(100, percent))
+  return (
+    <div className="h-2 w-full bg-slate-900/60 rounded-full overflow-hidden">
+      <div
+        className={`h-full transition-all duration-500 ease-out ${
+          active
+            ? 'bg-gradient-to-r from-blue-500 to-cyan-400'
+            : safe >= 100
+            ? 'bg-gradient-to-r from-emerald-500 to-emerald-400'
+            : 'bg-slate-700'
+        }`}
+        style={{ width: `${Math.max(safe, active ? 2 : 0)}%` }}
+      />
+    </div>
+  )
+}
+
+export function RefreshTab() {
+  const qc = useQueryClient()
+  const [status, setStatus] = useState<RefreshAllStatus | null>(null)
+  const [submitting, setSubmitting] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const previousStageRef = useRef<string>('idle')
+
+  // Load initial state on mount (in case a refresh is already running, e.g.
+  // user reloaded the page mid-run)
+  useEffect(() => {
+    fetchRefreshAllStatus()
+      .then(s => {
+        setStatus(s)
+        if (s.running) startPolling()
+      })
+      .catch(() => {})
+    return () => stopPolling()
+  }, [])
+
+  function stopPolling() {
+    if (pollRef.current) {
+      clearInterval(pollRef.current)
+      pollRef.current = null
+    }
+  }
+
+  function startPolling() {
+    stopPolling()
+    pollRef.current = setInterval(async () => {
+      try {
+        const s = await fetchRefreshAllStatus()
+        setStatus(s)
+        // Detect stage transitions to invalidate caches at the right moment
+        if (previousStageRef.current !== s.stage) {
+          if (s.stage === 'reviews' || s.stage === 'done') {
+            qc.invalidateQueries({ queryKey: ['bikes'] })
+            qc.invalidateQueries({ queryKey: ['brands'] })
+            qc.invalidateQueries({ queryKey: ['brandModels'] })
+            qc.invalidateQueries({ queryKey: ['sales'] })
+            qc.invalidateQueries({ queryKey: ['metrics'] })
+          }
+          if (s.stage === 'done') {
+            qc.invalidateQueries({ queryKey: ['reviews'] })
+            qc.invalidateQueries({ queryKey: ['reviewSummary'] })
+            qc.invalidateQueries({ queryKey: ['source-comparison'] })
+            // Toast on successful completion (only if previous stage wasn't already done)
+            const dur = s.duration_seconds ? `${Math.round(s.duration_seconds)}s` : ''
+            toast.success('Data refresh complete', {
+              description: `${s.discovery.bikes_found} bikes · ${s.reviews.reviews_added} reviews · ${s.retail.rows_added} retail rows${dur ? ` · ${dur}` : ''}`,
+            })
+          }
+          if (s.stage === 'error' && s.error) {
+            toast.error('Data refresh failed', { description: s.error })
+          }
+          previousStageRef.current = s.stage
+        }
+        if (!s.running) stopPolling()
+      } catch {
+        stopPolling()
+      }
+    }, 1500)
+  }
+
+  async function handleRefresh() {
+    setError(null)
+    setSubmitting(true)
+    try {
+      const r = await triggerRefreshAll()
+      if (r.status === 'already_running') {
+        // Just attach to the existing run
+      }
+      const s = await fetchRefreshAllStatus()
+      setStatus(s)
+      previousStageRef.current = s.stage
+      startPolling()
+    } catch (e) {
+      setError(`Failed to start refresh: ${e}`)
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Derived progress values
+  // ---------------------------------------------------------------------------
+  const isRunning = !!status?.running
+  const isDone = status?.stage === 'done'
+  const isError = status?.stage === 'error'
+  const stage = status?.stage ?? 'idle'
+
+  // Stage 1 — discovery
+  const dUrlsTotal = status?.discovery.urls_total ?? 0
+  const dUrlsDone = status?.discovery.urls_done ?? 0
+  const dBikes = status?.discovery.bikes_found ?? 0
+  const dPercent = dUrlsTotal > 0 ? (dUrlsDone / dUrlsTotal) * 100 : 0
+  const stage1Active = stage === 'discovering'
+  const stage1Complete = ['reviews', 'retail', 'done'].includes(stage)
+  const stage1Percent = stage1Complete ? 100 : dPercent
+
+  // Stage 2 — reviews
+  const rTotal = status?.reviews.bikes_total ?? 0
+  const rDone = status?.reviews.bikes_done ?? 0
+  const rCurrent = status?.reviews.current_bike
+  const rAdded = status?.reviews.reviews_added ?? 0
+  const stage2Active = stage === 'reviews'
+  const stage2Complete = ['retail', 'done'].includes(stage)
+  const stage2Percent =
+    stage2Complete ? 100 : rTotal > 0 ? (rDone / rTotal) * 100 : 0
+
+  // Stage 3 — FADA retail
+  const rPdfTotal = status?.retail?.pdfs_total ?? 0
+  const rPdfDone = status?.retail?.pdfs_done ?? 0
+  const rRows = status?.retail?.rows_added ?? 0
+  const stage3Active = stage === 'retail'
+  const stage3Complete = stage === 'done'
+  const stage3Percent =
+    stage3Complete ? 100 : rPdfTotal > 0 ? (rPdfDone / rPdfTotal) * 100 : 0
+
+  // ---------------------------------------------------------------------------
+  // Render
+  // ---------------------------------------------------------------------------
+  return (
+    <div className="flex flex-col gap-6">
+      <Card>
+        <CardContent className="space-y-5">
+        <div className="flex items-start justify-between gap-4 flex-wrap">
+          <div>
+            <h2 className="text-lg font-semibold text-foreground">Data Refresh</h2>
+            <p className="text-muted-foreground text-sm mt-1">
+              Re-scrape RushLane wholesale, BikeWale reviews, and FADA monthly retail data.
+            </p>
+          </div>
+          <Button
+            onClick={handleRefresh}
+            disabled={isRunning || submitting}
+            size="lg"
+            className="shrink-0"
+          >
+            {isRunning ? <Loader2 className="animate-spin" /> : <RefreshCw />}
+            {isRunning ? 'Refreshing…' : 'Refresh Everything'}
+          </Button>
+        </div>
+
+        {/* Idle hint */}
+        {stage === 'idle' && !isRunning && (
+          <p className="text-sm text-slate-500">
+            Click the button above. Discovery + reviews for ~40 bikes typically takes 5–10 minutes.
+          </p>
+        )}
+
+        {/* Last completion footer */}
+        {isDone && status?.finished_at && (
+          <div className="bg-emerald-900/25 border border-emerald-700/50 rounded-lg px-4 py-3 text-sm">
+            <p className="text-emerald-300 font-medium">
+              ✓ Refresh complete{' '}
+              <span className="text-emerald-400/70">
+                · {formatDuration(status.duration_seconds)}
+              </span>
+            </p>
+            <p className="text-emerald-300/70 text-xs mt-1">
+              {dBikes} bikes catalogued · {rAdded} reviews added · {rRows} retail rows · finished{' '}
+              {formatRelative(status.finished_at)}
+            </p>
+          </div>
+        )}
+
+        {/* Error footer */}
+        {isError && status?.error && (
+          <div className="bg-red-900/30 border border-red-700/50 rounded-lg px-4 py-3 text-sm">
+            <p className="text-red-300 font-medium">Refresh failed</p>
+            <p className="text-red-300/70 text-xs mt-1 font-mono">{status.error}</p>
+          </div>
+        )}
+
+        {error && (
+          <div className="bg-red-900/30 border border-red-700/50 rounded-lg px-4 py-3 text-sm text-red-300">
+            {error}
+          </div>
+        )}
+
+        {/* Stage 1 — discovery */}
+        {(isRunning || isDone || isError) && (
+          <div className="space-y-2">
+            <div className="flex items-center justify-between text-sm">
+              <div className="flex items-center gap-2">
+                <Badge
+                  variant={stage1Complete ? 'success' : stage1Active ? 'info' : 'secondary'}
+                  className="rounded-full"
+                >
+                  Stage 1 / 3
+                </Badge>
+                <span className="text-white font-medium">Discovering bikes from RushLane</span>
+                {stage1Active && status?.discovery.stage && (
+                  <span className="text-xs text-slate-400">· {status.discovery.stage}</span>
+                )}
+              </div>
+              <span className="text-xs text-slate-400 font-mono tabular-nums">
+                {stage1Complete
+                  ? `${dBikes} bikes parsed`
+                  : dUrlsTotal > 0
+                  ? `${dUrlsDone}/${dUrlsTotal} articles · ${dBikes} bikes`
+                  : '…'}
+              </span>
+            </div>
+            <ProgressBar percent={stage1Percent} active={stage1Active} />
+          </div>
+        )}
+
+        {/* Stage 2 — reviews */}
+        {(isRunning || isDone || isError) && (
+          <div className="space-y-2">
+            <div className="flex items-center justify-between text-sm">
+              <div className="flex items-center gap-2 min-w-0">
+                <Badge
+                  variant={stage2Complete ? 'success' : stage2Active ? 'info' : 'secondary'}
+                  className="rounded-full"
+                >
+                  Stage 2 / 3
+                </Badge>
+                <span className="text-white font-medium">Refreshing reviews</span>
+                {stage2Active && rCurrent && (
+                  <span className="text-xs text-slate-400 truncate">· {rCurrent}</span>
+                )}
+              </div>
+              <span className="text-xs text-slate-400 font-mono tabular-nums">
+                {stage2Complete
+                  ? `${rAdded} reviews added`
+                  : rTotal > 0
+                  ? `${rDone}/${rTotal} bikes · ${rAdded} reviews`
+                  : 'queued'}
+              </span>
+            </div>
+            <ProgressBar percent={stage2Percent} active={stage2Active} />
+          </div>
+        )}
+
+        {/* Stage 3 — FADA retail */}
+        {(isRunning || isDone || isError) && (
+          <div className="space-y-2">
+            <div className="flex items-center justify-between text-sm">
+              <div className="flex items-center gap-2 min-w-0">
+                <Badge
+                  variant={stage3Complete ? 'success' : stage3Active ? 'info' : 'secondary'}
+                  className="rounded-full"
+                >
+                  Stage 3 / 3
+                </Badge>
+                <span className="text-white font-medium">Fetching FADA retail data</span>
+              </div>
+              <span className="text-xs text-slate-400 font-mono tabular-nums">
+                {stage3Complete
+                  ? `${rRows} rows added`
+                  : rPdfTotal > 0
+                  ? `${rPdfDone}/${rPdfTotal} PDFs · ${rRows} rows`
+                  : 'queued'}
+              </span>
+            </div>
+            <ProgressBar percent={stage3Percent} active={stage3Active} />
+          </div>
+        )}
+        </CardContent>
+      </Card>
+
+      {/* Footnote */}
+      <p className="text-xs text-muted-foreground leading-relaxed">
+        Discovery hits RushLane's monthly sales-breakup articles. Reviews are scraped from BikeWale
+        for bikes whose reviews page exists. Retail data comes from FADA's monthly Vehicle Retail
+        Data PDFs (brand-level only). Theme analysis is not auto-rerun — open the Theme Analysis
+        tab and click Run for a specific bike.
+      </p>
+    </div>
+  )
+}

@@ -1,0 +1,73 @@
+# =============================================================================
+# Secrets — do not commit
+# =============================================================================
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+secrets.json
+
+# =============================================================================
+# Python
+# =============================================================================
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtualenvs
+venv/
+.venv/
+env/
+ENV/
+
+# Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# =============================================================================
+# Node / Vite
+# =============================================================================
+node_modules/
+dist/
+build/
+.next/
+.parcel-cache/
+.cache/
+
+# =============================================================================
+# OS
+# =============================================================================
+.DS_Store
+Thumbs.db
+
+# =============================================================================
+# Project-specific
+# =============================================================================
+# SQLite DBs are local data; users get fresh data via the Refresh tab on first run.
+backend/sales.db
+backend/sales.db.bak
+backend/*.db
+backend/*.db-journal
+backend/*.db-shm
+backend/*.db-wal
+
+# Server logs
+/tmp/uvicorn.log
+/tmp/vite.log
+/tmp/ollama_*.log
+
+# Plan files + local permission state (Claude Code workflow artefacts)
+.claude/plans/
+.claude/settings.local.json
+
+# Frontend TS build info
+frontend/tsconfig.*.tsbuildinfo
+frontend/node_modules/.tmp/
