@@ -60,7 +60,9 @@ def analyze(reviews: list[dict], min_cluster_size: int | None = None) -> list[di
     if not ok:
         return {"error": err}
 
-    texts = [r.get("review_text") or "" for r in reviews if r.get("review_text")]
+    kept = [r for r in reviews if r.get("review_text")]
+    texts = [r.get("review_text") or "" for r in kept]
+    post_ids = [r.get("post_id") for r in kept]
     if len(texts) < 5:
         return {"error": f"Need at least 5 reviews for clustering (have {len(texts)})."}
 
@@ -69,7 +71,7 @@ def analyze(reviews: list[dict], min_cluster_size: int | None = None) -> list[di
         min_cluster_size = 2 if len(texts) < 30 else max(3, len(texts) // 15)
 
     print(f"[semantic] embedding {len(texts)} reviews via Ollama…")
-    embeds = embed_texts(texts)
+    embeds = embed_texts(texts, post_ids=post_ids)
     if not embeds.any():
         return {"error": "All embeddings came back empty — check Ollama logs."}
 

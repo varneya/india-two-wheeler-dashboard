@@ -108,7 +108,9 @@ def analyze(
     if not ok:
         return {"error": err}
 
-    texts = [r.get("review_text") or "" for r in reviews if r.get("review_text")]
+    kept = [r for r in reviews if r.get("review_text")]
+    texts = [r.get("review_text") or "" for r in kept]
+    post_ids = [r.get("post_id") for r in kept]
     if len(texts) < 10:
         return {"error": "Need at least 10 reviews for the BERTopic pipeline."}
 
@@ -119,7 +121,7 @@ def analyze(
     n_neighbors = min(n_neighbors, max(2, len(texts) - 1))
 
     print(f"[bertopic] embedding {len(texts)} reviews…")
-    embeds = embed_texts(texts)
+    embeds = embed_texts(texts, post_ids=post_ids)
 
     print(f"[bertopic] UMAP reducing 768→{n_components} dims…")
     reducer = umap.UMAP(

@@ -100,6 +100,16 @@ def init_db():
                 scraped_at  TEXT NOT NULL,
                 UNIQUE(brand_id, month, source)
             );
+            -- Per-review embedding cache. Lookup key is (post_id, model) so a
+            -- future model swap doesn't accidentally serve stale vectors.
+            CREATE TABLE IF NOT EXISTS review_embeddings (
+                post_id    TEXT NOT NULL,
+                model      TEXT NOT NULL,
+                embedding  BLOB NOT NULL,
+                dim        INTEGER NOT NULL,
+                cached_at  TEXT NOT NULL,
+                PRIMARY KEY (post_id, model)
+            );
         """)
 
         # ------------- Add bike_id columns (idempotent) -------------
@@ -606,3 +616,47 @@ def get_themes_status(bike_id: str | None = None) -> dict:
         "last_method": last["method"] if last else None,
         "last_run_at": last["run_at"] if last else None,
     }
+
+
+# ---------------------------------------------------------------------------
+# Review embedding cache
+# ---------------------------------------------------------------------------
+
+def get_cached_embeddings(post_ids: list[str], model: str) -> dict[str, bytes]:
+    """Return {post_id: embedding_bytes} for any cached entries. Caller is
+    responsible for deserialising via numpy.frombuffer(..., dtype=float32)."""
+    if not post_ids:
+        return {}
+    placeholders = ",".join("?" * len(post_ids))
+    with get_conn() as conn:
+        rows = conn.execute(
+            f"SELECT post_id, embedding FROM review_embeddings "
+            f"WHERE model = ? AND post_id IN ({placeholders})",
+            (model, *post_ids),
+        ).fetchall()
+    return {r["post_id"]: r["embedding"] for r in rows}
+
+
+def cache_embeddings(
+    post_ids: list[str],
+    model: str,
+    embeddings_bytes: list[bytes],
+    dim: int,
+) -> None:
+    """Upsert per-post embeddings. Lengths of post_ids and embeddings_bytes
+    must match. No-op for empty inputs."""
+    if not post_ids:
+        return
+    if len(post_ids) != len(embeddings_bytes):
+        raise ValueError(
+            f"post_ids ({len(post_ids)}) / embeddings_bytes ({len(embeddings_bytes)}) length mismatch"
+        )
+    now = datetime.now(timezone.utc).isoformat()
+    with get_conn() as conn:
+        conn.executemany(
+            "INSERT INTO review_embeddings (post_id, model, embedding, dim, cached_at) "
+            "VALUES (?, ?, ?, ?, ?) "
+            "ON CONFLICT(post_id, model) DO UPDATE SET "
+            "  embedding = excluded.embedding, dim = excluded.dim, cached_at = excluded.cached_at",
+            [(pid, model, blob, dim, now) for pid, blob in zip(post_ids, embeddings_bytes)],
+        )

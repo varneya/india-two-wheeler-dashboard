@@ -40,37 +40,94 @@ def check_ollama_ready() -> tuple[bool, str | None]:
     return True, None
 
 
-def embed_texts(texts: list[str], log_progress: bool = True) -> np.ndarray:
-    """Embed a list of strings via Ollama. Returns (N, EMBED_DIM) array.
-    Drops empty strings (caller is responsible for keeping the index alignment
-    intact — easiest is to filter the input first)."""
-    out: list[list[float]] = []
-    started = time.time()
-    for i, text in enumerate(texts):
-        if not text or not text.strip():
-            out.append([0.0] * EMBED_DIM)
-            continue
-        # Cap at ~2000 chars — nomic handles up to 8k tokens but reviews are
-        # rarely that long; this saves ~10% on round-trip.
-        snippet = text[:2000]
-        try:
-            r = http_requests.post(
-                EMBED_URL,
-                json={"model": EMBED_MODEL, "prompt": snippet},
-                timeout=EMBED_TIMEOUT,
+def _embed_one(text: str) -> np.ndarray:
+    """Embed a single text via Ollama. Returns a (EMBED_DIM,) float32 array.
+    Empty / whitespace-only text returns zeros."""
+    if not text or not text.strip():
+        return np.zeros(EMBED_DIM, dtype=np.float32)
+    snippet = text[:2000]
+    try:
+        r = http_requests.post(
+            EMBED_URL,
+            json={"model": EMBED_MODEL, "prompt": snippet},
+            timeout=EMBED_TIMEOUT,
+        )
+        r.raise_for_status()
+        data = r.json()
+        emb = data.get("embedding")
+        if not emb or len(emb) != EMBED_DIM:
+            raise ValueError(f"unexpected embedding shape: {len(emb) if emb else 'none'}")
+        return np.asarray(emb, dtype=np.float32)
+    except Exception as e:
+        print(f"[embed] failed: {e}")
+        return np.zeros(EMBED_DIM, dtype=np.float32)
+
+
+def embed_texts(
+    texts: list[str],
+    post_ids: list[str] | None = None,
+    log_progress: bool = True,
+) -> np.ndarray:
+    """Embed a list of strings via Ollama. Returns (N, EMBED_DIM) float32 array.
+
+    If `post_ids` is provided, the per-review embedding cache (DB table
+    `review_embeddings`) is consulted first; only cache misses hit Ollama, and
+    fresh embeddings are written back. Lengths of `texts` and `post_ids` must
+    match when both are provided.
+
+    Empty strings are kept in place as zero vectors so the output stays index-
+    aligned with the input (callers depend on this for clustering)."""
+    n = len(texts)
+    out = np.zeros((n, EMBED_DIM), dtype=np.float32)
+    if n == 0:
+        return out
+
+    # Cache hit phase
+    cached_blobs: dict[str, bytes] = {}
+    if post_ids is not None:
+        if len(post_ids) != n:
+            raise ValueError(
+                f"texts ({n}) / post_ids ({len(post_ids)}) length mismatch"
             )
-            r.raise_for_status()
-            data = r.json()
-            emb = data.get("embedding")
-            if not emb or len(emb) != EMBED_DIM:
-                raise ValueError(f"unexpected embedding shape: {len(emb) if emb else 'none'}")
-            out.append(emb)
-        except Exception as e:
-            print(f"[embed] failed for review {i}: {e}")
-            out.append([0.0] * EMBED_DIM)
-        if log_progress and (i + 1) % 25 == 0:
-            print(f"[embed] {i+1}/{len(texts)} embedded in {time.time()-started:.1f}s")
-    return np.array(out, dtype=np.float32)
+        # Local import to avoid module-load cycles during db init.
+        from database import get_cached_embeddings  # noqa: WPS433
+        cached_blobs = get_cached_embeddings(post_ids, EMBED_MODEL)
+
+    miss_indices: list[int] = []
+    for i in range(n):
+        pid = post_ids[i] if post_ids is not None else None
+        if pid is not None and pid in cached_blobs:
+            out[i] = np.frombuffer(cached_blobs[pid], dtype=np.float32)
+        else:
+            miss_indices.append(i)
+
+    if log_progress and post_ids is not None:
+        print(
+            f"[embed] cache: {n - len(miss_indices)}/{n} hits, "
+            f"{len(miss_indices)} misses"
+        )
+
+    # Miss phase: embed the cache misses, then write them back.
+    started = time.time()
+    fresh_pids: list[str] = []
+    fresh_blobs: list[bytes] = []
+    for j, i in enumerate(miss_indices):
+        emb = _embed_one(texts[i])
+        out[i] = emb
+        if post_ids is not None and texts[i] and texts[i].strip():
+            fresh_pids.append(post_ids[i])
+            fresh_blobs.append(emb.tobytes())
+        if log_progress and (j + 1) % 25 == 0:
+            print(
+                f"[embed] {j+1}/{len(miss_indices)} fresh embeddings in "
+                f"{time.time()-started:.1f}s"
+            )
+
+    if fresh_pids:
+        from database import cache_embeddings  # noqa: WPS433
+        cache_embeddings(fresh_pids, EMBED_MODEL, fresh_blobs, EMBED_DIM)
+
+    return out
 
 
 # ---------------------------------------------------------------------------
