@@ -1,8 +1,34 @@
 # Setup & Dependencies
 
-This guide walks you through installing everything needed to run the India Two-Wheeler Dashboard locally — from the lightest setup (sales charts only) to the full stack (all five theming methods, including local LLM via Ollama).
+This guide walks you through installing everything needed to run the India Two-Wheeler Dashboard — from the lightest setup (sales charts only) to the full stack (all five theming methods, including local LLM via Ollama).
 
 > **Tip:** if you only want to browse the data and don't care about LLM/ML theme analysis, you can skip Sections 5 and 6 entirely.
+
+---
+
+## Quickstart with the hosted UI
+
+If you don't want to clone & build the frontend yourself, the hosted bundle at
+**<https://varneya.github.io/india-two-wheeler-dashboard/>** does it for you.
+The UI runs in your browser; the data scrapers, SQLite store, and ML/LLM
+inference all run on **your** machine.
+
+1. Open the URL above. It auto-lands on the **Setup** tab and shows live
+   status pills (Backend / Ollama / Models).
+2. Run the backend locally (Sections 2 + 3 below).
+3. Start Ollama with the hosted origin allowlisted so the browser can reach it:
+
+   ```bash
+   OLLAMA_ORIGINS="https://varneya.github.io" ollama serve
+   ```
+
+4. The Setup tab polls every ~8 s — pills go green and the rest of the
+   tabs come alive.
+
+The hosted frontend bundles a build-time `VITE_API_BASE=http://localhost:8000/api`,
+so it always calls *your* machine — never a third-party server. (The optional
+Anthropic Claude API call, only triggered by the "LLM → Claude" theme method,
+is the one exception.)
 
 ---
 
@@ -242,12 +268,17 @@ Then open <http://localhost:5173>.
 
 ## 8. Verify everything works
 
+The fastest check is the **Setup** tab in the dashboard itself — it polls the
+backend and Ollama every ~8 s and shows green/red pills for each. If you'd
+rather curl manually:
+
 | Check | Command / URL | Expected |
 |---|---|---|
 | Backend up | `curl http://localhost:8000/api/health` | `{"status":"ok"}` |
 | Hardware probe | `curl http://localhost:8000/api/hardware` | JSON with `chip`, `ram_gb`, `ollama.running` |
 | Ollama up | `curl http://localhost:11434/api/tags` | JSON list of pulled models |
-| Frontend up | <http://localhost:5173> | Dashboard loads with bike picker |
+| Frontend up (local) | <http://localhost:5173> | Dashboard loads with bike picker |
+| Frontend up (hosted) | <https://varneya.github.io/india-two-wheeler-dashboard/> | Same, served from GitHub Pages |
 | Embeddings | dashboard → Owner Insights → method = "Semantic" → run | Themes appear within ~30s |
 | LLM (Claude) | dashboard → Owner Insights → method = "LLM" → backend = Claude → run | Themes with sentiment + quotes |
 | LLM (Ollama) | dashboard → Owner Insights → method = "LLM" → backend = Ollama → run | Same, locally |

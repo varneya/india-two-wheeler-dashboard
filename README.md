@@ -10,6 +10,26 @@ Covers ~110 bikes across 15 manufacturers (Yamaha, Honda, Hero, Bajaj, TVS,
 Royal Enfield, Suzuki, KTM, Aprilia, Kawasaki, BMW, Triumph, Ducati, Husqvarna,
 Harley-Davidson).
 
+## Live dashboard
+
+**Hosted UI:** <https://varneya.github.io/india-two-wheeler-dashboard/>
+
+The hosted page is the React frontend only — it expects a backend and (for
+LLM/embedding methods) Ollama running on **your own machine**. No data is sent
+to any third-party server (the optional Anthropic Claude API call is the one
+exception, only if you pick the "LLM → Claude" theme method).
+
+On first load the page lands on the **Setup** tab, probes for `localhost:8000`
+(backend) and `localhost:11434` (Ollama), and shows live status pills + the
+exact commands you need to copy-paste. Once both are running, the rest of the
+tabs come alive.
+
+For full install instructions see **[SETUP.md](SETUP.md)**.
+
+For the system architecture (data engineering, dashboarding, ML/LLM, and the
+hosted-frontend + local-backend deployment topology) see
+**[ARCHITECTURE.md](ARCHITECTURE.md)**.
+
 ## Features
 
 - **Per-bike sales view** — monthly chart, peak / latest / total cards,
@@ -31,8 +51,15 @@ Harley-Davidson).
   FADA retail PDFs) with live progress
 - **`⌘K` command palette** to search bikes
 - **Light & dark mode**
+- **Setup tab** — live status pills for backend / Ollama / required models,
+  with copy-paste install commands. Auto-shown when the hosted page can't
+  reach a local backend.
 
 ## Architecture
+
+See **[ARCHITECTURE.md](ARCHITECTURE.md)** for full Mermaid diagrams covering
+data engineering, dashboarding, the LLM/ML stack, and the deployment
+topology (hosted frontend + local-first backend).
 
 ```
 backend/                    FastAPI + SQLite (no ORM)
@@ -49,13 +76,22 @@ backend/                    FastAPI + SQLite (no ORM)
   themes_llm.py             Method 5 — Claude or Ollama
   hardware_detector.py      Mac chip detection + Ollama status
   database.py               SQLite schema + migrations
-  main.py                   FastAPI routes
+  main.py                   FastAPI routes (CORS allowlists localhost:5173
+                            and varneya.github.io for the hosted UI)
 
 frontend/                   Vite + React 19 + TypeScript
   src/components/ui/        shadcn/ui primitives
-  src/components/           App-specific components
+  src/components/           App-specific components (incl. SetupTab.tsx)
+  src/api/client.ts         Shared API_BASE / OLLAMA_BASE (env-driven)
   src/api/                  Axios + fetch helpers
   src/hooks/                React Query hooks + theme toggle
+
+.github/workflows/
+  deploy.yml                Builds frontend and publishes to GitHub Pages on
+                            every push touching frontend/. Bakes
+                            VITE_API_BASE=http://localhost:8000/api into the
+                            production build so the hosted UI calls the
+                            visitor's own machine.
 ```
 
 **Data sources:**
@@ -69,50 +105,42 @@ frontend/                   Vite + React 19 + TypeScript
 
 ## Setup
 
-### Prerequisites
+Full step-by-step guide (with per-OS commands, troubleshooting, and a
+"method → dependencies" cheat-sheet) is in **[SETUP.md](SETUP.md)**.
 
-- Python 3.10+
-- Node 18+ (for the frontend)
-- (Optional) [Ollama](https://ollama.com) for the local-LLM theme methods
-
-### Backend
+### TL;DR — local-only
 
 ```bash
+# Backend
 cd backend
-python -m venv venv
-source venv/bin/activate
+python3 -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env  # add ANTHROPIC_API_KEY if you want the Claude LLM method
 uvicorn main:app --reload --port 8000
-```
 
-The first startup runs migrations and seeds the bike catalogue. Visit
-[http://localhost:8000/api/health](http://localhost:8000/api/health).
-
-### Frontend
-
-```bash
+# Frontend (in a second terminal)
 cd frontend
-npm install
-npm run dev   # http://localhost:5173
+npm install && npm run dev          # → http://localhost:5173
+
+# Optional: Ollama for local LLM / embeddings
+brew install ollama && ollama serve &
+ollama pull nomic-embed-text mistral:7b
 ```
 
-### (Optional) Ollama for local LLM / embedding methods
+### TL;DR — use the hosted UI with your local backend
+
+Visit <https://varneya.github.io/india-two-wheeler-dashboard/>, then on your
+machine:
 
 ```bash
-# Easy path — runs the bundled installer
-chmod +x scripts/install_ollama.sh
-./scripts/install_ollama.sh
+# Terminal 1 — backend
+cd backend && source venv/bin/activate && uvicorn main:app --port 8000
 
-# Or manually:
-brew install ollama
-ollama serve &
-ollama pull nomic-embed-text   # 274 MB — required for Semantic / BERTopic methods
-ollama pull mistral:7b         # 4.4 GB  — used by BERTopic's LLM-naming step + LLM Analysis method
+# Terminal 2 — Ollama, allowlisting the hosted origin
+OLLAMA_ORIGINS="https://varneya.github.io" ollama serve
 ```
 
-The dashboard's *Theme Analysis* tab auto-detects whether Ollama is running
-and surfaces install hints if it isn't.
+The Setup tab on the hosted page polls every ~8s and lights up green once both
+are reachable.
 
 ## First run
 

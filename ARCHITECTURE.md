@@ -1,6 +1,11 @@
 # Architecture
 
-Three views of the system, scoped to the concerns they cover. All Mermaid blocks render directly on GitHub.
+Four views of the system, scoped to the concerns they cover. All Mermaid blocks render directly on GitHub.
+
+1. **Data engineering** — scrapers, catalogue, orchestrator, SQLite store
+2. **Dashboarding** — React frontend, FastAPI surface, env-driven API base
+3. **LLM / ML** — five theming engines, embeddings, hardware detection
+4. **Deployment topology** — GitHub Pages frontend + visitor-local backend + Ollama
 
 ---
 
@@ -69,17 +74,18 @@ flowchart LR
 
 ## 2. Dashboarding
 
-React 19 + Vite + TS frontend talks to a FastAPI backend over `/api/*`. State is managed by TanStack Query (server) and a `SelectedBike` React Context (global). Charts are Recharts; UI is shadcn/Radix on Tailwind v4.
+React 19 + Vite + TS frontend talks to a FastAPI backend through a shared `API_BASE` (in `api/client.ts`) that defaults to `/api` for local dev (proxied by Vite to `localhost:8000`) and is overridden at build time via `VITE_API_BASE` for the GitHub Pages deploy. State is managed by TanStack Query (server) and a `SelectedBike` React Context (global). Charts are Recharts; UI is shadcn/Radix on Tailwind v4.
 
 ```mermaid
 flowchart TB
-    subgraph Browser["Browser — Vite :5173"]
+    subgraph Browser["Browser — Vite :5173 (or hosted GitHub Pages)"]
         APP[App.tsx<br/>tab router]
         subgraph Tabs["Tabs"]
             T_SALES[Sales]
             T_INS[Owner Insights]
             T_CMP[Compare]
             T_REF[Data Refresh]
+            T_SET[Setup<br/>auto-default if<br/>backend unreachable]
         end
         subgraph Components["Components"]
             BP[BikePicker /<br/>BikeCommandPalette ⌘K]
@@ -88,13 +94,15 @@ flowchart TB
             CT[CompareTab]
             TT[ThemesTab]
             RT[RefreshTab]
+            ST[SetupTab<br/>status pills +<br/>install commands]
             MC[MetricsCards /<br/>SalesTable]
             SCC[SourceComparisonCard<br/>wholesale vs retail]
         end
         subgraph Data["Data layer"]
             QC[TanStack Query<br/>cache + polling]
             CTX[SelectedBike Context]
-            AX[Axios — /api]
+            AX[Axios — API_BASE]
+            CL["api/client.ts<br/>API_BASE / OLLAMA_BASE<br/>(env-driven)"]
         end
         APIS["api/<br/>bikesApi · salesApi ·<br/>reviewsApi · themesApi"]
     end
@@ -105,26 +113,34 @@ flowchart TB
         E_RV["/api/bikes/{id}/reviews<br/>/api/bikes/{id}/reviews/summary"]
         E_REF["/api/refresh-all<br/>/api/refresh-all/status"]
         E_SYS["/api/health<br/>/api/hardware"]
+        CORS["CORS allowlist:<br/>localhost:5173 +<br/>varneya.github.io"]
     end
 
+    OL[("Ollama @ :11434")]
     DB[(SQLite<br/>sales.db)]
 
-    APP --> T_SALES & T_INS & T_CMP & T_REF
+    APP --> T_SALES & T_INS & T_CMP & T_REF & T_SET
     T_SALES --> BP & SC & MC & SCC
     T_INS --> TT & RC
     T_CMP --> CT
     T_REF --> RT
+    T_SET --> ST
 
     BP --> CTX
     CTX --> QC
     Components --> APIS
-    APIS --> AX
-    AX -->|HTTP /api| Backend
+    APIS --> CL
+    CL --> AX
+    AX -->|HTTP API_BASE| Backend
+
+    ST -.probe /health.-> Backend
+    ST -.probe /api/tags.-> OL
 
     QC -.polls status.- E_REF
 
     E_BR & E_BK & E_RV & E_SYS --> DB
     E_REF --> DB
+    Backend --- CORS
 ```
 
 ---
@@ -195,3 +211,53 @@ flowchart TB
 | `semantic` | medium (embeddings) | Ollama only | denser topics on small corpora |
 | `bertopic` | medium-high | Ollama (+optional LLM naming) | interpretable topics with auto-named clusters |
 | `llm` | low local | Anthropic **or** Ollama | best narrative themes, sentiment, exemplar quotes |
+
+---
+
+## 4. Deployment topology
+
+The hosted UI lives on GitHub Pages but is deliberately *empty* of data — it's a static React bundle whose API base is hard-coded at build time to `http://localhost:8000/api`. Visitors run the FastAPI backend (and optionally Ollama) on their own machine; the browser ferries data between the hosted page and the visitor's localhost. Nothing the visitor scrapes or reviews ever leaves their laptop, except the optional Anthropic Claude API call.
+
+```mermaid
+flowchart LR
+    subgraph Repo["GitHub repo · varneya/india-two-wheeler-dashboard"]
+        SRC[main branch<br/>frontend/ + backend/]
+        WF[".github/workflows/deploy.yml<br/>triggers on push to frontend/**"]
+    end
+
+    subgraph CI["GitHub Actions runner"]
+        BUILD["npm ci + npm run build<br/><br/>env:<br/>VITE_API_BASE=<br/>http://localhost:8000/api<br/>VITE_OLLAMA_BASE=<br/>http://localhost:11434"]
+        ART[upload-pages-artifact<br/>→ frontend/dist]
+    end
+
+    GH_PAGES[("GitHub Pages CDN<br/>varneya.github.io/<br/>india-two-wheeler-dashboard/")]
+
+    subgraph Visitor["Visitor's machine"]
+        BROWSER["Browser<br/>loads the hosted bundle"]
+        FAPI["FastAPI :8000<br/>uvicorn main:app<br/><br/>CORS allows<br/>varneya.github.io"]
+        OLL["Ollama :11434<br/>OLLAMA_ORIGINS=<br/>https://varneya.github.io"]
+        SQL[(sales.db)]
+    end
+
+    SRC --> WF --> BUILD --> ART --> GH_PAGES
+    GH_PAGES -->|HTML/JS/CSS| BROWSER
+    BROWSER -->|XHR localhost:8000/api/*| FAPI
+    BROWSER -->|fetch localhost:11434<br/>embeddings + chat| OLL
+    FAPI <--> SQL
+
+    classDef cloud fill:#1e3a5f,stroke:#3b82f6,color:#fff
+    classDef local fill:#0d2818,stroke:#10b981,color:#fff
+    class Repo,CI,GH_PAGES cloud
+    class Visitor local
+```
+
+**Why this works:**
+
+- Browsers exempt `localhost` from mixed-content blocking, so an HTTPS page can fetch `http://localhost:8000` and `http://localhost:11434`.
+- The backend explicitly allowlists `https://varneya.github.io` in CORS (`backend/main.py`).
+- Ollama needs `OLLAMA_ORIGINS=https://varneya.github.io` set when started, so its CORS preflight permits the browser request.
+- The `SetupTab` component polls both endpoints every ~8 s and surfaces the install commands when either is unreachable, so a fresh visitor lands on a useful page even before they've installed anything.
+
+**Why this is free:** GitHub Pages hosts the static bundle at zero cost, GitHub Actions provides 2000 free CI minutes/month, and all heavy compute (scraping, embeddings, clustering, LLM inference) runs on the visitor's machine. The only paid path is the optional Anthropic Claude API, billed per-call to whoever owns the API key.
+
+**Local-only mode:** `npm run dev` and `uvicorn main:app` work exactly as before — `command !== 'build'` keeps `base: '/'` and the API client's default `/api` is proxied to `localhost:8000` by Vite. The hosted-mode plumbing is purely additive.
