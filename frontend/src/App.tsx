@@ -127,15 +127,18 @@ function Dashboard() {
           </div>
         </div>
 
-        {/* Tabs (Radix-backed) */}
+        {/* Tabs (Radix-backed). Wrapper allows the list to scroll horizontally
+            on narrow viewports instead of clipping the rightmost tab. */}
         <Tabs value={tab} onValueChange={(v) => setTab(v as Tab)}>
-          <TabsList>
-            {TAB_ORDER.map(t => (
-              <TabsTrigger key={t} value={t}>
-                {TAB_LABELS[t]}
-              </TabsTrigger>
-            ))}
-          </TabsList>
+          <div className="overflow-x-auto -mx-4 px-4 pb-1">
+            <TabsList>
+              {TAB_ORDER.map(t => (
+                <TabsTrigger key={t} value={t}>
+                  {TAB_LABELS[t]}
+                </TabsTrigger>
+              ))}
+            </TabsList>
+          </div>
         </Tabs>
 
         {/* Error banner */}
