@@ -64,9 +64,8 @@ backend/*.db-wal
 /tmp/vite.log
 /tmp/ollama_*.log
 
-# Plan files + local permission state (Claude Code workflow artefacts)
-.claude/plans/
-.claude/settings.local.json
+# Claude Code workflow artefacts
+.claude/
 
 # Frontend TS build info
 frontend/tsconfig.*.tsbuildinfo
