@@ -14,6 +14,15 @@ interface OllamaStatus {
 
 const REQUIRED_MODELS = ['nomic-embed-text', 'mistral:7b']
 
+// Ollama auto-appends `:latest` when a model is pulled without an explicit
+// tag, so `nomic-embed-text` shows up as `nomic-embed-text:latest` in
+// /api/tags. Treat the bare name and `:latest` as equivalent.
+function hasModel(required: string, pulled: string[]): boolean {
+  if (pulled.includes(required)) return true
+  if (!required.includes(':')) return pulled.includes(`${required}:latest`)
+  return false
+}
+
 async function probeBackend(): Promise<Probe> {
   try {
     const res = await fetch(`${API_BASE}/health`, { cache: 'no-store' })
@@ -77,7 +86,7 @@ export function SetupTab() {
     return () => clearInterval(id)
   }, [])
 
-  const missingModels = REQUIRED_MODELS.filter(m => !ollama.models.includes(m))
+  const missingModels = REQUIRED_MODELS.filter(m => !hasModel(m, ollama.models))
   const modelsState: Probe =
     ollama.state !== 'ok' ? 'unknown' : missingModels.length === 0 ? 'ok' : 'down'
 
@@ -128,7 +137,7 @@ export function SetupTab() {
             <div className="text-xs text-muted-foreground">
               {REQUIRED_MODELS.map(m => (
                 <div key={m} className="flex items-center gap-1">
-                  {ollama.models.includes(m) ? '✓' : '·'} {m}
+                  {hasModel(m, ollama.models) ? '✓' : '·'} {m}
                 </div>
               ))}
             </div>
