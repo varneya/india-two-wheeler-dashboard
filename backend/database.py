@@ -118,6 +118,11 @@ def init_db():
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN bike_id TEXT")
                 print(f"[migrate] added bike_id to {table}")
 
+        # ------------- themes_analysis.metrics (idempotent) -------------
+        if not _column_exists(conn, "themes_analysis", "metrics"):
+            conn.execute("ALTER TABLE themes_analysis ADD COLUMN metrics TEXT")
+            print("[migrate] added metrics column to themes_analysis")
+
         # ------------- Backfill legacy rows -------------
         for table in ("sales_data", "reviews", "themes_analysis"):
             updated = conn.execute(
@@ -602,29 +607,44 @@ def get_wholesale_brand_totals(brand_id: str) -> list[dict]:
 # Themes — bike-scoped
 # ---------------------------------------------------------------------------
 
-def save_themes_analysis(bike_id: str, method: str, config: dict, themes: list):
+def save_themes_analysis(
+    bike_id: str,
+    method: str,
+    config: dict,
+    themes: list,
+    metrics: dict | None = None,
+):
     now = datetime.now(timezone.utc).isoformat()
     with get_conn() as conn:
         conn.execute(
-            """INSERT INTO themes_analysis (bike_id, method, config, themes, run_at)
-               VALUES (?, ?, ?, ?, ?)""",
-            (bike_id, method, _json.dumps(config), _json.dumps(themes), now),
+            """INSERT INTO themes_analysis (bike_id, method, config, themes, metrics, run_at)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (
+                bike_id,
+                method,
+                _json.dumps(config),
+                _json.dumps(themes),
+                _json.dumps(metrics) if metrics is not None else None,
+                now,
+            ),
         )
 
 
 def get_latest_themes(bike_id: str) -> dict | None:
     with get_conn() as conn:
         row = conn.execute(
-            """SELECT method, config, themes, run_at FROM themes_analysis
+            """SELECT method, config, themes, metrics, run_at FROM themes_analysis
                WHERE bike_id = ? ORDER BY id DESC LIMIT 1""",
             (bike_id,),
         ).fetchone()
     if not row:
         return None
+    metrics_raw = row["metrics"]
     return {
         "method": row["method"],
         "config": _json.loads(row["config"]),
         "themes": _json.loads(row["themes"]),
+        "metrics": _json.loads(metrics_raw) if metrics_raw else None,
         "run_at": row["run_at"],
     }
 

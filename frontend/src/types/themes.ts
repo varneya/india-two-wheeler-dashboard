@@ -9,12 +9,23 @@ export interface Theme {
   // bike (0 = entirely from siblings, 1 = uniquely about this bike).
   localized_share?: number | null
   bike_review_counts?: Record<string, number>
+  // Per-theme average rating, computed from any attributed reviews carrying
+  // overall_rating. Null if no rated reviews were attributed.
+  avg_rating?: number | null
+  rating_count?: number
+}
+
+export interface ThemesMetrics {
+  npmi: number | null
+  theme_diversity: number | null
+  n_reviews: number
 }
 
 export interface ThemesResult {
   method: string
   config: Record<string, unknown>
   themes: Theme[] | null
+  metrics?: ThemesMetrics | null
   run_at?: string
   error?: string | null
 }

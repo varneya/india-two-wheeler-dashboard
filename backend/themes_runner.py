@@ -20,6 +20,7 @@ import themes_tfidf
 import themes_llm
 import themes_semantic
 import themes_bertopic
+import themes_quality
 
 
 _TOKEN_RE = re.compile(r"[a-z][a-z']+")
@@ -31,57 +32,71 @@ def _tokenise(text: str | None) -> set[str]:
     return set(_TOKEN_RE.findall(text.lower()))
 
 
-def _attribute_reviews_to_themes(
-    themes: list[dict], reviews: list[dict], target_bike_id: str
+def _attribute_and_enrich(
+    themes: list[dict],
+    reviews: list[dict],
+    target_bike_id: str | None,
 ) -> list[dict]:
-    """For each theme, compute the fraction of reviews most-likely-belonging
-    to that theme that came from `target_bike_id`. Method-agnostic: scores
-    each (review, theme) pair by Jaccard-style overlap between the review's
-    word set and the theme's `keywords` list, then takes the argmax.
+    """For each theme:
+      - Assign every review whose word-set has any overlap with the theme's
+        keywords. Tie-break by highest overlap.
+      - Aggregate per-bike review counts (used for `localized_share` when a
+        target bike is given) and per-theme average rating.
 
-    Mutates the themes in place by adding `localized_share: float` and
-    `bike_review_counts: dict[str, int]`. Themes with no clearly-assigned
-    review get `localized_share=None` so the UI can hide the badge."""
+    Mutates `themes` in place by adding:
+      - `bike_review_counts: dict[str, int]`
+      - `localized_share: float | None`  (only meaningful when target_bike_id
+                                          was provided AND ≥1 review attributed)
+      - `avg_rating: float | None`       (mean of `overall_rating` across
+                                          attributed reviews that have one)
+    """
 
-    theme_keysets: list[tuple[set[str], dict]] = []
+    theme_keysets: list[set[str]] = []
     for t in themes:
-        kws = t.get("keywords") or []
-        # Split each keyword on spaces so multi-word keywords contribute their
-        # individual tokens to the match.
-        tok = set()
-        for kw in kws:
+        tok: set[str] = set()
+        for kw in (t.get("keywords") or []):
             tok.update(_tokenise(str(kw)))
-        # Also fold in any words from the theme name as a fallback
         tok.update(_tokenise(t.get("name") or ""))
-        theme_keysets.append((tok, t))
+        theme_keysets.append(tok)
 
-    # For each review, find the best-overlap theme
     counts_by_theme: list[dict[str, int]] = [dict() for _ in themes]
+    rating_sums: list[float] = [0.0 for _ in themes]
+    rating_n: list[int] = [0 for _ in themes]
+
     for r in reviews:
-        rid = r.get("bike_id")
         rtok = _tokenise(r.get("review_text"))
         if not rtok:
             continue
         best_idx, best_score = -1, 0
-        for i, (kws, _t) in enumerate(theme_keysets):
+        for i, kws in enumerate(theme_keysets):
             if not kws:
                 continue
             overlap = len(rtok & kws)
             if overlap > best_score:
                 best_idx, best_score = i, overlap
-        if best_idx >= 0 and best_score > 0:
-            d = counts_by_theme[best_idx]
-            d[rid] = d.get(rid, 0) + 1
+        if best_idx < 0 or best_score == 0:
+            continue
+        rid = r.get("bike_id")
+        if rid is not None:
+            counts_by_theme[best_idx][rid] = counts_by_theme[best_idx].get(rid, 0) + 1
+        rating = r.get("overall_rating")
+        if rating is not None:
+            try:
+                rating_sums[best_idx] += float(rating)
+                rating_n[best_idx] += 1
+            except (TypeError, ValueError):
+                pass
 
     for i, t in enumerate(themes):
         per_bike = counts_by_theme[i]
         total = sum(per_bike.values())
-        if total == 0:
-            t["localized_share"] = None
-            t["bike_review_counts"] = {}
-        else:
+        t["bike_review_counts"] = per_bike
+        if target_bike_id and total > 0:
             t["localized_share"] = per_bike.get(target_bike_id, 0) / total
-            t["bike_review_counts"] = per_bike
+        else:
+            t["localized_share"] = None
+        t["avg_rating"] = (rating_sums[i] / rating_n[i]) if rating_n[i] > 0 else None
+        t["rating_count"] = rating_n[i]
 
     return themes
 
@@ -154,14 +169,27 @@ def run_analysis(
     if isinstance(result, dict) and "error" in result:
         return {"themes": None, "error": result["error"]}
 
-    if pool_scope == "brand":
-        result = _attribute_reviews_to_themes(result, reviews, bike_id)
+    # Per-theme attribution: bike counts, localized share (brand scope only),
+    # and avg rating from any reviews carrying overall_rating.
+    target_bike = bike_id if pool_scope == "brand" else None
+    result = _attribute_and_enrich(result, reviews, target_bike)
+
+    # Quality metrics — method-agnostic NPMI + theme diversity over the
+    # corpus we actually clustered.
+    review_texts = [r.get("review_text") or "" for r in reviews if r.get("review_text")]
+    theme_keywords = [t.get("keywords") or [] for t in result]
+    metrics = themes_quality.compute_metrics(theme_keywords, review_texts)
+    metrics["n_reviews"] = len(review_texts)
 
     # Persist with the resolved scope so the UI can disambiguate cached results.
     persisted_config = {**(config or {}), "pool_scope": pool_scope}
     database.save_themes_analysis(
-        bike_id=bike_id, method=method, config=persisted_config, themes=result
+        bike_id=bike_id,
+        method=method,
+        config=persisted_config,
+        themes=result,
+        metrics=metrics,
     )
     print(f"[themes] {bike_id}: saved {len(result)} themes (scope={pool_scope})")
 
-    return {"themes": result, "error": None}
+    return {"themes": result, "metrics": metrics, "error": None}

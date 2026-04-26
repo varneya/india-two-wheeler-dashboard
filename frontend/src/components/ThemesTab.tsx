@@ -512,7 +512,16 @@ function ThemeCard({ theme, rank }: { theme: Theme; rank: number }) {
           <span className="text-xs font-bold text-muted-foreground/70 w-5 shrink-0">#{rank}</span>
           <p className="font-semibold text-foreground text-sm leading-tight">{theme.name}</p>
         </div>
-        <div className="flex items-center gap-2 shrink-0">
+        <div className="flex items-center gap-2 shrink-0 flex-wrap justify-end">
+          {typeof theme.avg_rating === 'number' && (theme.rating_count ?? 0) > 0 && (
+            <Badge
+              variant={theme.avg_rating >= 4 ? 'success' : theme.avg_rating >= 3 ? 'info' : 'warning'}
+              className="rounded-full"
+              title={`Average rating across ${theme.rating_count} attributed reviews carrying a numeric rating`}
+            >
+              ★ {theme.avg_rating.toFixed(1)}
+            </Badge>
+          )}
           {typeof theme.localized_share === 'number' && (
             <Badge
               variant={theme.localized_share >= 0.4 ? 'success' : theme.localized_share >= 0.15 ? 'info' : 'secondary'}
@@ -814,6 +823,33 @@ export function ThemesTab() {
               )
             })}
           </div>
+
+          {/* Quality metrics pills */}
+          {result.metrics && (
+            <div className="flex flex-wrap gap-2 text-xs">
+              {result.metrics.npmi !== null && (
+                <Badge
+                  variant={result.metrics.npmi >= 0.3 ? 'success' : result.metrics.npmi >= 0.1 ? 'info' : 'warning'}
+                  className="rounded-full"
+                  title="Normalised Pointwise Mutual Information — average pairwise coherence of theme keywords (>0.3 sharp, 0.1-0.3 decent, <0.1 noisy)"
+                >
+                  coherence (NPMI) {result.metrics.npmi.toFixed(2)}
+                </Badge>
+              )}
+              {result.metrics.theme_diversity !== null && (
+                <Badge
+                  variant={result.metrics.theme_diversity >= 0.7 ? 'success' : 'info'}
+                  className="rounded-full"
+                  title="Fraction of unique tokens across all themes — high values mean themes don't overlap"
+                >
+                  diversity {(result.metrics.theme_diversity * 100).toFixed(0)}%
+                </Badge>
+              )}
+              <Badge variant="secondary" className="rounded-full" title="Reviews fed into the clustering">
+                {result.metrics.n_reviews} reviews
+              </Badge>
+            </div>
+          )}
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             {result.themes.map((t, i) => (
