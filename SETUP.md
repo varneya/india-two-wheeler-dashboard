@@ -121,7 +121,7 @@ pip install \
 |---|---|---|
 | `fastapi` | `main.py` | HTTP API framework |
 | `uvicorn[standard]` | `main.py` | ASGI server |
-| `requests` | scrapers, themes_embeddings | HTTP client (RushLane, BikeWale, Ollama) |
+| `requests` | scrapers, themes_embeddings | HTTP client (RushLane, BikeWale, BikeDekho, ZigWheels, Reddit, Ollama) |
 | `beautifulsoup4` | `scraper.py`, `reviews_scraper.py` | HTML parsing |
 | `anthropic` | `themes_llm.py` | Claude API client |
 | `python-dotenv` | `main.py` | Load `.env` |

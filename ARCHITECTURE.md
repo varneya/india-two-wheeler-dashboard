@@ -11,13 +11,16 @@ Four views of the system, scoped to the concerns they cover. All Mermaid blocks 
 
 ## 1. Data Engineering
 
-Three independent scrapers feed a single SQLite store. The `/api/refresh-all` endpoint orchestrates them as a 3-stage pipeline (RushLane discovery → BikeWale reviews → FADA PDF parse), with per-stage progress polled by the frontend.
+Six independent scrapers feed a single SQLite store. The `/api/refresh-all` endpoint orchestrates them as a 4-stage pipeline (RushLane discovery → BikeWale reviews → BikeDekho/ZigWheels/Reddit reviews → FADA PDF parse), with per-stage progress polled by the frontend. The `reviews` table tags each row with a `source` column so the four review streams co-exist and dedupe cleanly via `post_id`.
 
 ```mermaid
 flowchart LR
     subgraph Sources["External Sources"]
         RL[(RushLane<br/>sales-breakup articles)]
         BW[(BikeWale<br/>owner reviews)]
+        BD[(BikeDekho<br/>user reviews + ratings)]
+        ZW[(ZigWheels<br/>user reviews)]
+        RD[(Reddit /r/IndianBikes<br/>JSON API)]
         FADA[(FADA<br/>monthly PDFs)]
     end
 
@@ -29,7 +32,10 @@ flowchart LR
     subgraph Scrapers["Scrapers (backend/)"]
         SC[scraper.py<br/>article discovery]
         EX[extractor.py<br/>per-bike unit regex]
-        RS[reviews_scraper.py<br/>dedupe by post_id]
+        RS[reviews_scraper.py<br/>BikeWale]
+        BDS[bikedekho_scraper.py<br/>30 reviews/page + ratings]
+        ZWS[zigwheels_scraper.py<br/>numeric review IDs]
+        RDS[reddit_scraper.py<br/>top comments per post]
         FS[fada_scraper.py<br/>pdfplumber]
     end
 
@@ -41,28 +47,38 @@ flowchart LR
     subgraph Store["SQLite — backend/sales.db"]
         T1[(bikes)]
         T2[(sales_data<br/>wholesale)]
-        T3[(reviews)]
+        T3[("reviews<br/>source ∈ {bikewale,<br/>bikedekho, zigwheels, reddit}")]
         T4[(retail_brand_sales<br/>FADA)]
         T5[(scrape_log /<br/>reviews_log)]
     end
 
     RA -->|stage 1| SC --> EX
     RA -->|stage 2| RS
-    RA -->|stage 3| FS
+    RA -->|stage 3| BDS & ZWS & RDS
+    RA -->|stage 4| FS
 
     RL --> SC
     RL --> EX
     BW --> RS
+    BD --> BDS
+    ZW --> ZWS
+    RD --> RDS
     FADA --> FS
 
     BC -.validates.- EX
     BC -.iterates.- RS
+    BC -.iterates.- BDS
+    BC -.iterates.- ZWS
+    BC -.iterates.- RDS
     BR -.lookup.- EX
 
     EX --> T1
     EX --> T2
     EX --> T5
     RS --> T3
+    BDS --> T3
+    ZWS --> T3
+    RDS --> T3
     RS --> T5
     FS --> T4
 

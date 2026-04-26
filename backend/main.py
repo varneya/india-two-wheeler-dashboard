@@ -14,6 +14,9 @@ import seed_data
 from extractor import extract_sales_for_bike
 from scraper import scrape_all
 from reviews_scraper import scrape_reviews_for_bike
+from bikedekho_scraper import scrape_bikedekho_for_bike
+from zigwheels_scraper import scrape_zigwheels_for_bike
+from reddit_scraper import scrape_reddit_for_bike
 import hardware_detector
 import themes_runner
 import themes_keyword
@@ -308,7 +311,7 @@ _refresh_all_lock = threading.Lock()
 _refresh_all_running: bool = False
 _refresh_all_state: dict = {
     "running": False,
-    "stage": "idle",            # idle | discovering | reviews | retail | done | error
+    "stage": "idle",            # idle | discovering | reviews | other_sources | retail | done | error
     "started_at": None,
     "finished_at": None,
     "discovery": {
@@ -318,6 +321,11 @@ _refresh_all_state: dict = {
         "bikes_total": 0, "bikes_done": 0,
         "current_bike": None, "current_bike_id": None,
         "reviews_added": 0,
+    },
+    "other_sources": {          # BikeDekho + ZigWheels + Reddit
+        "bikes_total": 0, "bikes_done": 0,
+        "current_bike": None, "current_bike_id": None,
+        "bikedekho_added": 0, "zigwheels_added": 0, "reddit_added": 0,
     },
     "retail": {                 # FADA monthly retail PDFs
         "pdfs_total": 0, "pdfs_done": 0, "rows_added": 0,
@@ -346,6 +354,11 @@ def _run_refresh_all():
             "bikes_total": 0, "bikes_done": 0,
             "current_bike": None, "current_bike_id": None,
             "reviews_added": 0,
+        }
+        _refresh_all_state["other_sources"] = {
+            "bikes_total": 0, "bikes_done": 0,
+            "current_bike": None, "current_bike_id": None,
+            "bikedekho_added": 0, "zigwheels_added": 0, "reddit_added": 0,
         }
         _refresh_all_state["retail"] = {
             "pdfs_total": 0, "pdfs_done": 0, "rows_added": 0,
@@ -390,7 +403,46 @@ def _run_refresh_all():
 
         database.log_reviews_run(total_reviews, None)
 
-        # Stage 3 — FADA monthly retail PDFs (brand-level)
+        # Stage 3 — additional review sources (BikeDekho, ZigWheels, Reddit)
+        # All three reuse the same `bikes` set as the BikeWale stage. Each
+        # scraper is wrapped in its own try/except so a single failing source
+        # never aborts the rest.
+        with _refresh_all_lock:
+            _refresh_all_state["stage"] = "other_sources"
+            _refresh_all_state["other_sources"]["bikes_total"] = len(bikes)
+
+        for bike in bikes:
+            with _refresh_all_lock:
+                _refresh_all_state["other_sources"]["current_bike"] = bike["display_name"]
+                _refresh_all_state["other_sources"]["current_bike_id"] = bike["id"]
+
+            for source_key, scraper in (
+                ("bikedekho_added", scrape_bikedekho_for_bike),
+                ("zigwheels_added", scrape_zigwheels_for_bike),
+                ("reddit_added",    scrape_reddit_for_bike),
+            ):
+                try:
+                    new_reviews = scraper(bike)
+                    for r in new_reviews:
+                        database.upsert_review(
+                            bike_id=r["bike_id"],
+                            source=r["source"],
+                            post_id=r["post_id"],
+                            username=r.get("username"),
+                            review_text=r.get("review_text", ""),
+                            overall_rating=r.get("overall_rating"),
+                            thread_url=r.get("thread_url"),
+                        )
+                    with _refresh_all_lock:
+                        _refresh_all_state["other_sources"][source_key] += len(new_reviews)
+                    total_reviews += len(new_reviews)
+                except Exception as src_err:
+                    print(f"[refresh-all] {bike['id']} {source_key.split('_')[0]} failed: {src_err}")
+
+            with _refresh_all_lock:
+                _refresh_all_state["other_sources"]["bikes_done"] += 1
+
+        # Stage 4 — FADA monthly retail PDFs (brand-level)
         with _refresh_all_lock:
             _refresh_all_state["stage"] = "retail"
         try:
@@ -463,6 +515,7 @@ def refresh_all_status():
             "duration_seconds": _refresh_all_state.get("duration_seconds"),
             "discovery": dict(_refresh_all_state["discovery"]),
             "reviews": dict(_refresh_all_state["reviews"]),
+            "other_sources": dict(_refresh_all_state.get("other_sources") or {}),
             "retail": dict(_refresh_all_state.get("retail") or {}),
             "error": _refresh_all_state["error"],
         }

@@ -81,7 +81,7 @@ export function RefreshTab() {
         setStatus(s)
         // Detect stage transitions to invalidate caches at the right moment
         if (previousStageRef.current !== s.stage) {
-          if (s.stage === 'reviews' || s.stage === 'done') {
+          if (s.stage === 'reviews' || s.stage === 'other_sources' || s.stage === 'done') {
             qc.invalidateQueries({ queryKey: ['bikes'] })
             qc.invalidateQueries({ queryKey: ['brands'] })
             qc.invalidateQueries({ queryKey: ['brandModels'] })
@@ -94,8 +94,13 @@ export function RefreshTab() {
             qc.invalidateQueries({ queryKey: ['source-comparison'] })
             // Toast on successful completion (only if previous stage wasn't already done)
             const dur = s.duration_seconds ? `${Math.round(s.duration_seconds)}s` : ''
+            const extraReviews =
+              (s.other_sources?.bikedekho_added ?? 0) +
+              (s.other_sources?.zigwheels_added ?? 0) +
+              (s.other_sources?.reddit_added ?? 0)
+            const totalReviews = (s.reviews.reviews_added ?? 0) + extraReviews
             toast.success('Data refresh complete', {
-              description: `${s.discovery.bikes_found} bikes · ${s.reviews.reviews_added} reviews · ${s.retail.rows_added} retail rows${dur ? ` · ${dur}` : ''}`,
+              description: `${s.discovery.bikes_found} bikes · ${totalReviews} reviews · ${s.retail.rows_added} retail rows${dur ? ` · ${dur}` : ''}`,
             })
           }
           if (s.stage === 'error' && s.error) {
@@ -143,27 +148,40 @@ export function RefreshTab() {
   const dBikes = status?.discovery.bikes_found ?? 0
   const dPercent = dUrlsTotal > 0 ? (dUrlsDone / dUrlsTotal) * 100 : 0
   const stage1Active = stage === 'discovering'
-  const stage1Complete = ['reviews', 'retail', 'done'].includes(stage)
+  const stage1Complete = ['reviews', 'other_sources', 'retail', 'done'].includes(stage)
   const stage1Percent = stage1Complete ? 100 : dPercent
 
-  // Stage 2 — reviews
+  // Stage 2 — reviews (BikeWale)
   const rTotal = status?.reviews.bikes_total ?? 0
   const rDone = status?.reviews.bikes_done ?? 0
   const rCurrent = status?.reviews.current_bike
   const rAdded = status?.reviews.reviews_added ?? 0
   const stage2Active = stage === 'reviews'
-  const stage2Complete = ['retail', 'done'].includes(stage)
+  const stage2Complete = ['other_sources', 'retail', 'done'].includes(stage)
   const stage2Percent =
     stage2Complete ? 100 : rTotal > 0 ? (rDone / rTotal) * 100 : 0
 
-  // Stage 3 — FADA retail
+  // Stage 3 — additional review sources (BikeDekho + ZigWheels + Reddit)
+  const oTotal = status?.other_sources?.bikes_total ?? 0
+  const oDone = status?.other_sources?.bikes_done ?? 0
+  const oCurrent = status?.other_sources?.current_bike
+  const oBikedekho = status?.other_sources?.bikedekho_added ?? 0
+  const oZigwheels = status?.other_sources?.zigwheels_added ?? 0
+  const oReddit = status?.other_sources?.reddit_added ?? 0
+  const oTotalAdded = oBikedekho + oZigwheels + oReddit
+  const stage3Active = stage === 'other_sources'
+  const stage3Complete = ['retail', 'done'].includes(stage)
+  const stage3Percent =
+    stage3Complete ? 100 : oTotal > 0 ? (oDone / oTotal) * 100 : 0
+
+  // Stage 4 — FADA retail
   const rPdfTotal = status?.retail?.pdfs_total ?? 0
   const rPdfDone = status?.retail?.pdfs_done ?? 0
   const rRows = status?.retail?.rows_added ?? 0
-  const stage3Active = stage === 'retail'
-  const stage3Complete = stage === 'done'
-  const stage3Percent =
-    stage3Complete ? 100 : rPdfTotal > 0 ? (rPdfDone / rPdfTotal) * 100 : 0
+  const stage4Active = stage === 'retail'
+  const stage4Complete = stage === 'done'
+  const stage4Percent =
+    stage4Complete ? 100 : rPdfTotal > 0 ? (rPdfDone / rPdfTotal) * 100 : 0
 
   // ---------------------------------------------------------------------------
   // Render
@@ -236,7 +254,7 @@ export function RefreshTab() {
                   variant={stage1Complete ? 'success' : stage1Active ? 'info' : 'secondary'}
                   className="rounded-full"
                 >
-                  Stage 1 / 3
+                  Stage 1 / 4
                 </Badge>
                 <span className="text-white font-medium">Discovering bikes from RushLane</span>
                 {stage1Active && status?.discovery.stage && (
@@ -264,9 +282,9 @@ export function RefreshTab() {
                   variant={stage2Complete ? 'success' : stage2Active ? 'info' : 'secondary'}
                   className="rounded-full"
                 >
-                  Stage 2 / 3
+                  Stage 2 / 4
                 </Badge>
-                <span className="text-white font-medium">Refreshing reviews</span>
+                <span className="text-white font-medium">Refreshing BikeWale reviews</span>
                 {stage2Active && rCurrent && (
                   <span className="text-xs text-slate-400 truncate">· {rCurrent}</span>
                 )}
@@ -283,7 +301,7 @@ export function RefreshTab() {
           </div>
         )}
 
-        {/* Stage 3 — FADA retail */}
+        {/* Stage 3 — additional review sources */}
         {(isRunning || isDone || isError) && (
           <div className="space-y-2">
             <div className="flex items-center justify-between text-sm">
@@ -292,19 +310,47 @@ export function RefreshTab() {
                   variant={stage3Complete ? 'success' : stage3Active ? 'info' : 'secondary'}
                   className="rounded-full"
                 >
-                  Stage 3 / 3
+                  Stage 3 / 4
+                </Badge>
+                <span className="text-white font-medium">BikeDekho · ZigWheels · Reddit</span>
+                {stage3Active && oCurrent && (
+                  <span className="text-xs text-slate-400 truncate">· {oCurrent}</span>
+                )}
+              </div>
+              <span className="text-xs text-slate-400 font-mono tabular-nums">
+                {stage3Complete
+                  ? `${oTotalAdded} reviews added (BD ${oBikedekho} · ZW ${oZigwheels} · RD ${oReddit})`
+                  : oTotal > 0
+                  ? `${oDone}/${oTotal} bikes · ${oTotalAdded} reviews`
+                  : 'queued'}
+              </span>
+            </div>
+            <ProgressBar percent={stage3Percent} active={stage3Active} />
+          </div>
+        )}
+
+        {/* Stage 4 — FADA retail */}
+        {(isRunning || isDone || isError) && (
+          <div className="space-y-2">
+            <div className="flex items-center justify-between text-sm">
+              <div className="flex items-center gap-2 min-w-0">
+                <Badge
+                  variant={stage4Complete ? 'success' : stage4Active ? 'info' : 'secondary'}
+                  className="rounded-full"
+                >
+                  Stage 4 / 4
                 </Badge>
                 <span className="text-white font-medium">Fetching FADA retail data</span>
               </div>
               <span className="text-xs text-slate-400 font-mono tabular-nums">
-                {stage3Complete
+                {stage4Complete
                   ? `${rRows} rows added`
                   : rPdfTotal > 0
                   ? `${rPdfDone}/${rPdfTotal} PDFs · ${rRows} rows`
                   : 'queued'}
               </span>
             </div>
-            <ProgressBar percent={stage3Percent} active={stage3Active} />
+            <ProgressBar percent={stage4Percent} active={stage4Active} />
           </div>
         )}
         </CardContent>
@@ -312,10 +358,11 @@ export function RefreshTab() {
 
       {/* Footnote */}
       <p className="text-xs text-muted-foreground leading-relaxed">
-        Discovery hits RushLane's monthly sales-breakup articles. Reviews are scraped from BikeWale
-        for bikes whose reviews page exists. Retail data comes from FADA's monthly Vehicle Retail
-        Data PDFs (brand-level only). Theme analysis is not auto-rerun — open the Theme Analysis
-        tab and click Run for a specific bike.
+        Discovery hits RushLane's monthly sales-breakup articles. Stage 2 scrapes BikeWale's per-bike
+        reviews; Stage 3 layers in BikeDekho user reviews (with ratings), ZigWheels user reviews, and
+        relevant comments from <a className="underline" href="https://www.reddit.com/r/IndianBikes/" target="_blank" rel="noreferrer">r/IndianBikes</a>.
+        Retail data comes from FADA's monthly Vehicle Retail Data PDFs (brand-level only). Theme
+        analysis is not auto-rerun — open the Theme Analysis tab and click Run for a specific bike.
       </p>
     </div>
   )

@@ -1,10 +1,10 @@
 # India Two-Wheeler Sales Dashboard
 
 A self-hosted dashboard that scrapes monthly motorcycle & scooter sales data
-from public Indian sources, owner reviews from BikeWale, and turns the reviews
-into themes via five different theming methods — keyword rules, TF-IDF
-clustering, semantic embedding clustering, BERTopic, or an LLM (Claude or
-local Ollama).
+from public Indian sources, owner reviews from **BikeWale, BikeDekho,
+ZigWheels, and r/IndianBikes**, and turns the reviews into themes via five
+different theming methods — keyword rules, TF-IDF clustering, semantic
+embedding clustering, BERTopic, or an LLM (Claude or local Ollama).
 
 Covers ~110 bikes across 15 manufacturers (Yamaha, Honda, Hero, Bajaj, TVS,
 Royal Enfield, Suzuki, KTM, Aprilia, Kawasaki, BMW, Triumph, Ducati, Husqvarna,
@@ -37,8 +37,9 @@ hosted-frontend + local-backend deployment topology) see
 - **Cross-source comparison** — RushLane (manufacturer-reported) vs FADA
   (dealer registrations from Vahan) for each brand
 - **Compare tab** — overlay 2–4 bikes' monthly sales on one chart
-- **Owner Insights** — BikeWale reviews with real reviewer names and star
-  ratings, plus AI-derived themes from those reviews
+- **Owner Insights** — reviews from BikeWale, BikeDekho, ZigWheels, and
+  Reddit r/IndianBikes (~50–70 reviews per popular bike vs. BikeWale alone's
+  ~10), with AI-derived themes from the merged corpus
 - **Five theming methods** —
   - **Keyword Rules** — fast, deterministic, with a UI for editing keyword
     buckets per session (persists to `localStorage`)
@@ -47,8 +48,9 @@ hosted-frontend + local-backend deployment topology) see
   - **BERTopic Pipeline** — embeddings → UMAP → HDBSCAN → c-TF-IDF, with
     optional Mistral 7B name refinement
   - **LLM Analysis** — Claude (API) or any local Ollama model
-- **One-click data refresh** — three-stage pipeline (RushLane → BikeWale →
-  FADA retail PDFs) with live progress
+- **One-click data refresh** — four-stage pipeline (RushLane discovery →
+  BikeWale reviews → BikeDekho/ZigWheels/Reddit reviews → FADA retail PDFs)
+  with live progress
 - **`⌘K` command palette** to search bikes
 - **Light & dark mode**
 - **Setup tab** — live status pills for backend / Ollama / required models,
@@ -68,6 +70,9 @@ backend/                    FastAPI + SQLite (no ORM)
   bike_registry.py          URL-slug → catalogue lookup
   bike_catalogue.py         Curated whitelist of ~110 Indian bikes
   reviews_scraper.py        BikeWale review scraper
+  bikedekho_scraper.py      BikeDekho user reviews (~30/page, with ratings)
+  zigwheels_scraper.py      ZigWheels user reviews (numeric review IDs)
+  reddit_scraper.py         r/IndianBikes search + comment-thread JSON
   fada_scraper.py           FADA monthly retail PDF parser (pdfplumber)
   themes_keyword.py         Method 1 — keyword bucket matching
   themes_tfidf.py           Method 2 — TF-IDF + KMeans
@@ -99,7 +104,12 @@ frontend/                   Vite + React 19 + TypeScript
 - **RushLane** — monthly "sales-breakup" articles. Manufacturer-reported
   numbers (mostly wholesale dispatches; some brands report Vahan retail —
   see the *Sales by source* card for the cross-check)
-- **BikeWale** — owner reviews per model (~10 per bike, dedupe'd by review ID)
+- **BikeWale** — owner reviews per model (~10 per bike, deduped by review ID)
+- **BikeDekho** — user reviews with explicit 1–5 star ratings (~30 per bike on
+  page 1; deduped by hash of author + date + title)
+- **ZigWheels** — user reviews with stable site-issued numeric IDs
+- **Reddit r/IndianBikes** — top-level comments on posts matching the bike's
+  display name, filtered by length and upvote score
 - **FADA** — monthly Vehicle Retail Data PDFs. Brand-level only; comes from
   Vahan dealer registrations
 
@@ -172,8 +182,9 @@ Recharts, TanStack Query, Lucide, Sonner, cmdk
   retail (Vahan registrations). RushLane is mostly manufacturer dispatches
   but varies by brand. The "Sales by source" card surfaces both rather than
   asserting which is "correct".
-- **Reviews are capped at what BikeWale shows on page 1** (~10 per bike).
-  BikeWale's `?page=N` query param is a no-op on their server.
+- **Reviews per source are capped at what each site shows on page 1**
+  (BikeWale ~10, BikeDekho ~30, ZigWheels ~4, Reddit ~6 posts × top comments).
+  Pagination is generally JS-driven or server-side disabled on these sites.
 - **Themes quality scales with review count.** With 10 reviews, expect 2–4
   themes. With 100+, the embedding methods produce much sharper clusters.
 
@@ -183,8 +194,8 @@ This project scrapes publicly accessible web pages for personal analysis. It
 respects `robots.txt` for the sites it touches and rate-limits aggressively.
 If you're a publisher and want your site removed, open an issue or pull request.
 
-Not affiliated with Yamaha, Honda, Hero, Bajaj, TVS, RushLane, BikeWale, FADA,
-or any other entity mentioned.
+Not affiliated with Yamaha, Honda, Hero, Bajaj, TVS, RushLane, BikeWale,
+BikeDekho, ZigWheels, Reddit, FADA, or any other entity mentioned.
 
 ## License
 
