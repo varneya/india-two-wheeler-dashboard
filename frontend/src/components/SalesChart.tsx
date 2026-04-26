@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import {
   Area,
   Bar,
@@ -13,9 +14,10 @@ import {
   YAxis,
 } from 'recharts'
 import type { ForecastResult } from '../api/salesApi'
-import type { SalesSeriesResponse } from '../types/sales'
+import type { SalesSeriesResponse, SeriesHistoryPoint } from '../types/sales'
 import { formatMonth } from '../utils/format'
 import { Card, CardContent } from './ui/card'
+import { SourceDistributionDialog } from './SourceDistributionDialog'
 
 interface Props {
   // Canonical monthly time series with imputation marks + inline anomaly
@@ -44,6 +46,9 @@ interface Row {
   avg: number | null
   // Anomaly z-score, or null
   anomalyZ: number | null
+  // Reference back to the source SeriesHistoryPoint so click handlers can
+  // open the per-source distribution dialog without re-querying.
+  point: SeriesHistoryPoint | null
 }
 
 function rollingAvg(values: (number | null)[], window = 3): (number | null)[] {
@@ -74,6 +79,7 @@ function buildRows(series: SalesSeriesResponse | null, forecast: ForecastResult 
         bandHeight: null,
         avg: null, // filled below
         anomalyZ: h.anomaly?.z_score ?? null,
+        point: h,
       })
     }
   }
@@ -100,6 +106,7 @@ function buildRows(series: SalesSeriesResponse | null, forecast: ForecastResult 
         bandHeight: height,
         avg: null,
         anomalyZ: null,
+        point: null,
       })
     }
   }
@@ -118,6 +125,9 @@ function findTodayLabel(rows: Row[]): string | null {
 }
 
 export function SalesChart({ series, forecast, displayName }: Props) {
+  // Active dialog point — set when the user clicks a historical bar.
+  const [activePoint, setActivePoint] = useState<SeriesHistoryPoint | null>(null)
+
   if (!series || series.history.length === 0) {
     return (
       <Card className="h-64 flex items-center justify-center">
@@ -131,13 +141,32 @@ export function SalesChart({ series, forecast, displayName }: Props) {
   const rows = buildRows(series, forecast)
   const todayLabel = forecast ? findTodayLabel(rows) : null
   const intervalPct = forecast ? Math.round(forecast.interval_width * 100) : 95
+  const hasMultiSourceMonths = series.history.some(h => h.n_sources >= 2)
+
+  function onBarClick(payload: unknown) {
+    // Recharts onClick gives the bar's data row; we attached `point` to it.
+    const row = payload as Row | undefined
+    if (row?.point) setActivePoint(row.point)
+  }
 
   return (
     <Card>
       <CardContent>
-        <h3 className="text-lg font-semibold mb-2">
-          Monthly Sales — {displayName ?? 'Selected bike'} (India)
-        </h3>
+        <div className="flex items-center justify-between mb-2 flex-wrap gap-2">
+          <h3 className="text-lg font-semibold">
+            Monthly Sales — {displayName ?? 'Selected bike'} (India)
+          </h3>
+          <p className="text-xs text-muted-foreground">
+            {hasMultiSourceMonths
+              ? 'Click a bar to see per-source breakdown'
+              : 'Click a bar for source details'}
+          </p>
+        </div>
+        <SourceDistributionDialog
+          point={activePoint}
+          displayName={displayName}
+          onClose={() => setActivePoint(null)}
+        />
         <ResponsiveContainer width="100%" height={320}>
           <ComposedChart data={rows} margin={{ top: 4, right: 16, left: 0, bottom: 0 }}>
             <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
@@ -204,13 +233,16 @@ export function SalesChart({ series, forecast, displayName }: Props) {
             )}
 
             {/* Historical bars — solid for observed, lighter + dashed-stroke
-                for imputed. Same colour so the eye reads them as one series. */}
+                for imputed. Same colour so the eye reads them as one series.
+                onClick on each opens the per-source distribution dialog. */}
             <Bar
               dataKey="observed"
               fill="#3b82f6"
               radius={[4, 4, 0, 0]}
               isAnimationActive={false}
               legendType="none"
+              cursor="pointer"
+              onClick={onBarClick}
             />
             <Bar
               dataKey="imputed"
@@ -221,6 +253,8 @@ export function SalesChart({ series, forecast, displayName }: Props) {
               radius={[4, 4, 0, 0]}
               isAnimationActive={false}
               legendType="none"
+              cursor="pointer"
+              onClick={onBarClick}
             />
 
             {/* 3-month rolling avg — orange line over historical points */}
@@ -277,6 +311,22 @@ export function SalesChart({ series, forecast, displayName }: Props) {
                 strokeWidth={2}
               />
             ))}
+
+            {/* Multi-source indicator — small green dot atop bars where ≥2
+                sources reported a value. Visual cue that clicking will reveal
+                a meaningful distribution rather than a single-row dialog. */}
+            {series.history
+              .filter(h => h.n_sources >= 2)
+              .map(h => (
+                <ReferenceDot
+                  key={`multi-${h.month}`}
+                  x={formatMonth(h.month)}
+                  y={h.units}
+                  r={3}
+                  fill="#10b981"
+                  stroke="none"
+                />
+              ))}
           </ComposedChart>
         </ResponsiveContainer>
       </CardContent>

@@ -676,6 +676,39 @@ def get_themes_status(bike_id: str | None = None) -> dict:
 # Review embedding cache
 # ---------------------------------------------------------------------------
 
+def get_sales_by_month_with_sources(bike_id: str) -> list[dict]:
+    """Per-month breakdown showing every source that reported a value for
+    this bike. Used by the unified Sales view's distribution popover and by
+    forecast.build_complete_index for median consolidation across sources.
+
+    Returns rows in chronological order, one per (bike_id, month):
+        [{
+            "month": "2026-03",
+            "sources": [
+                {"source": "rushlane", "units_sold": 13500, "source_url": "..."},
+                ...
+            ],
+        }, ...]
+    """
+    with get_conn() as conn:
+        rows = conn.execute(
+            """SELECT month, source, units_sold, source_url
+               FROM sales_data
+               WHERE bike_id = ?
+               ORDER BY month ASC, source ASC""",
+            (bike_id,),
+        ).fetchall()
+    by_month: dict[str, list[dict]] = {}
+    for r in rows:
+        m = r["month"]
+        by_month.setdefault(m, []).append({
+            "source": r["source"],
+            "units_sold": int(r["units_sold"]),
+            "source_url": r["source_url"],
+        })
+    return [{"month": m, "sources": sources} for m, sources in by_month.items()]
+
+
 def get_cached_embeddings(post_ids: list[str], model: str) -> dict[str, bytes]:
     """Return {post_id: embedding_bytes} for any cached entries. Caller is
     responsible for deserialising via numpy.frombuffer(..., dtype=float32)."""

@@ -85,7 +85,14 @@ def compute_launch_month(bike_id: str) -> str | None:
 def build_complete_index(bike_id: str) -> pd.Series:
     """Returns a Period-indexed (freq='M') float Series from launch_month
     through the most recent observed month. Missing months are NaN. Empty
-    Series if there are no sales rows."""
+    Series if there are no sales rows.
+
+    When a month has multiple source rows (e.g. RushLane wholesale +
+    AutoPunditz dispatch + an OCR'd infographic), the **median** is used as
+    the canonical value. Median is robust to outliers and treats sources as
+    independent estimates of truth. Use `build_distribution_payload()` if
+    you need the full per-source breakdown for visualisation.
+    """
     sales = database.get_all_sales(bike_id=bike_id)
     if not sales:
         return pd.Series(dtype="float64")
@@ -96,16 +103,15 @@ def build_complete_index(bike_id: str) -> pd.Series:
     end = max(s["month"] for s in sales)
     idx = pd.period_range(start=_month_to_period(launch), end=_month_to_period(end), freq="M")
 
-    # Sum units across multiple sources for the same month (rushlane vs fada)
-    by_month: dict[pd.Period, float] = {}
+    by_month: dict[pd.Period, list[float]] = {}
     for s in sales:
         p = _month_to_period(s["month"])
-        if p in by_month:
-            by_month[p] = max(by_month[p], float(s["units_sold"]))  # take the larger of the two
-        else:
-            by_month[p] = float(s["units_sold"])
+        by_month.setdefault(p, []).append(float(s["units_sold"]))
 
-    values = [by_month.get(p, np.nan) for p in idx]
+    def _consolidate(vals: list[float]) -> float:
+        return float(np.median(vals)) if vals else float("nan")
+
+    values = [_consolidate(by_month.get(p, [])) if p in by_month else np.nan for p in idx]
     return pd.Series(values, index=idx, dtype="float64")
 
 
@@ -309,13 +315,18 @@ def detect_anomalies(series: pd.Series, z_thresh: float = 2.5) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 def build_series_payload(bike_id: str) -> dict:
-    """Cheap, no-Prophet helper: imputed monthly history + anomalies. Used by
-    the unified Sales view for its always-on layer (the forecast layer is
-    fetched lazily on top).
+    """Cheap, no-Prophet helper: imputed monthly history + anomalies + per-
+    source breakdown. Used by the unified Sales view for its always-on layer
+    (the forecast layer is fetched lazily on top).
 
-    Each row in `history` carries an inline `anomaly` field — null for normal
-    months, otherwise `{is_anomaly: true, z_score: float}` — so the chart can
-    render anomaly markers without a second lookup.
+    Each row in `history` carries:
+      - `units` (the median across reporting sources, or the imputed value)
+      - `imputed` + `impute_method` (whether and how this month was filled)
+      - `anomaly` (null or `{is_anomaly: true, z_score}`)
+      - `n_sources` (how many sources reported this month — 0 if imputed)
+      - `stddev` (sample std of the reporting sources, or null)
+      - `sources` ([{source, units_sold, source_url}, ...]) — full
+        breakdown so the UI can render a distribution popover on click.
     """
     raw = build_complete_index(bike_id)
     if raw.empty:
@@ -327,12 +338,25 @@ def build_series_payload(bike_id: str) -> dict:
 
     imputed_series, meta = impute(raw)
     anomalies = detect_anomalies(imputed_series)
-    by_month = {a["month"]: a for a in anomalies}
+    anomaly_by_month = {a["month"]: a for a in anomalies}
+
+    # Per-month per-source breakdown
+    by_month_sources = {
+        row["month"]: row["sources"]
+        for row in database.get_sales_by_month_with_sources(bike_id)
+    }
 
     history_payload: list[dict] = []
     for i, m in enumerate(meta):
         v = imputed_series.iloc[i]
-        anomaly_entry = by_month.get(m["month"])
+        anomaly_entry = anomaly_by_month.get(m["month"])
+        sources = by_month_sources.get(m["month"], [])
+        units_only = [s["units_sold"] for s in sources]
+        stddev: float | None
+        if len(units_only) >= 2:
+            stddev = float(np.std(units_only, ddof=1))
+        else:
+            stddev = None
         history_payload.append({
             "month": m["month"],
             "units": float(v),
@@ -342,6 +366,9 @@ def build_series_payload(bike_id: str) -> dict:
                 {"is_anomaly": True, "z_score": anomaly_entry["z_score"]}
                 if anomaly_entry else None
             ),
+            "n_sources": len(sources),
+            "stddev": stddev,
+            "sources": sources,
         })
 
     return {

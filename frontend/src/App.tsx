@@ -19,7 +19,7 @@ import { SetupTab } from './components/SetupTab'
 import { StatusBanner } from './components/StatusBanner'
 import { SourceComparisonCard } from './components/SourceComparisonCard'
 import { Badge } from './components/ui/badge'
-import { Card, CardContent } from './components/ui/card'
+import { Card } from './components/ui/card'
 import { Button } from './components/ui/button'
 import {
   Collapsible,
@@ -212,27 +212,23 @@ function Dashboard() {
                   launchMonth={selectedBike?.launch_month}
                   forecast={forecast}
                 />
-                <Card>
-                  <CardContent>
-                    <SalesChartControls
-                      series={series}
-                      forecast={forecast}
-                      showForecast={showForecast}
-                      setShowForecast={setShowForecast}
-                      horizon={horizon}
-                      setHorizon={setHorizon}
-                      forecastFitting={forecastFitting}
-                      canForecast={canForecast}
-                      observedCount={observedCount}
-                      refit={refit}
-                    />
-                    <SalesChart
-                      series={series}
-                      forecast={forecast}
-                      displayName={selectedBike?.display_name}
-                    />
-                  </CardContent>
-                </Card>
+                <SalesChartControls
+                  series={series}
+                  forecast={forecast}
+                  showForecast={showForecast}
+                  setShowForecast={setShowForecast}
+                  horizon={horizon}
+                  setHorizon={setHorizon}
+                  forecastFitting={forecastFitting}
+                  canForecast={canForecast}
+                  observedCount={observedCount}
+                  refit={refit}
+                />
+                <SalesChart
+                  series={series}
+                  forecast={forecast}
+                  displayName={selectedBike?.display_name}
+                />
                 {/* Anomalies + imputation detail strip — each card hides
                     itself when there's nothing to show, so the row collapses
                     gracefully if only one (or neither) has content. */}
