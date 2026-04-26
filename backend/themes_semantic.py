@@ -70,7 +70,8 @@ def analyze(reviews: list[dict], min_cluster_size: int | None = None) -> list[di
     if min_cluster_size is None:
         min_cluster_size = 2 if len(texts) < 30 else max(3, len(texts) // 15)
 
-    print(f"[semantic] embedding {len(texts)} reviews via Ollama…")
+    from themes_embeddings import active_model as _active_model  # local to avoid cycle
+    print(f"[semantic] embedding {len(texts)} reviews via {_active_model()}…")
     embeds = embed_texts(texts, post_ids=post_ids)
     if not embeds.any():
         return {"error": "All embeddings came back empty — check Ollama logs."}

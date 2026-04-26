@@ -1,66 +1,176 @@
 """
 Shared utilities for embedding-based theme methods.
 
-We use Ollama's nomic-embed-text as the embedding backend — it runs locally
-on the M4 Max, no API key, ~274 MB model, 768-dim output. No torch dependency.
+Two embedding backends, selected via the `EMBEDDING_BACKEND` env var:
 
-This module is consumed by both:
-  - themes_semantic.py (Solid upgrade — embeddings + HDBSCAN + c-TF-IDF)
-  - themes_bertopic.py (Power user — adds UMAP + optional LLM naming)
+  - `ollama` (default): Ollama's `nomic-embed-text`, 274 MB, 768-dim. Best on
+    macOS where Ollama uses Metal acceleration. Requires Ollama running on
+    localhost:11434 with the model pulled.
+  - `sentence_transformers`: HuggingFace `all-MiniLM-L6-v2` running in-process
+    via the `sentence-transformers` library. 90 MB, 384-dim. No external
+    process; ideal for cloud deploys where you can't run Ollama. Adds ~500 MB
+    RAM (PyTorch). Install with `pip install sentence-transformers`.
+
+The cache table (`review_embeddings`) is keyed by (post_id, model), so the
+two backends co-exist cleanly — switching backends triggers a fresh re-embed
+without poisoning the cache for callers using the other model.
+
+Consumed by:
+  - themes_semantic.py (embeddings + HDBSCAN + c-TF-IDF)
+  - themes_bertopic.py (adds UMAP + optional LLM naming)
 """
 
 from __future__ import annotations
 
+import os
 import re
 import time
 from collections import Counter
+from typing import Literal
 
 import numpy as np
 import requests as http_requests
 from sklearn.feature_extraction.text import CountVectorizer
 
-EMBED_MODEL = "nomic-embed-text"
-EMBED_URL = "http://localhost:11434/api/embeddings"
-EMBED_DIM = 768
-EMBED_TIMEOUT = 30
+# ---------------------------------------------------------------------------
+# Backend selection
+# ---------------------------------------------------------------------------
+
+Backend = Literal["ollama", "sentence_transformers"]
+
+OLLAMA_URL = "http://localhost:11434/api/embeddings"
+OLLAMA_MODEL = "nomic-embed-text"
+OLLAMA_DIM = 768
+OLLAMA_TIMEOUT = 30
+
+ST_MODEL = "all-MiniLM-L6-v2"
+ST_DIM = 384
+
+
+def _backend() -> Backend:
+    v = (os.environ.get("EMBEDDING_BACKEND") or "ollama").lower()
+    if v in ("st", "sentence_transformers", "sentence-transformers", "minilm"):
+        return "sentence_transformers"
+    return "ollama"
+
+
+# Active backend's model name + dim — exported so callers (and the cache key)
+# don't need to branch.
+def active_model() -> str:
+    return ST_MODEL if _backend() == "sentence_transformers" else OLLAMA_MODEL
+
+
+def active_dim() -> int:
+    return ST_DIM if _backend() == "sentence_transformers" else OLLAMA_DIM
+
+
+# Back-compat shims for any external import that still references these.
+EMBED_MODEL = active_model()
+EMBED_DIM = active_dim()
+EMBED_URL = OLLAMA_URL  # only meaningful for the Ollama backend
+EMBED_TIMEOUT = OLLAMA_TIMEOUT
 
 
 def check_ollama_ready() -> tuple[bool, str | None]:
     """Returns (ok, error_message). Used to fail fast when Ollama or the
-    embedding model isn't available, so we can surface a clear error to the
-    UI instead of a generic 500."""
+    embedding model isn't available so we surface a clear error to the UI
+    instead of a generic 500. Always returns ok=True for non-Ollama backends
+    (the model is in-process and validated lazily on first use)."""
+    if _backend() != "ollama":
+        return True, None
     try:
         r = http_requests.get("http://localhost:11434/api/tags", timeout=3)
         r.raise_for_status()
     except Exception as e:
         return False, f"Ollama is not running. Start it with: ollama serve  ({e})"
     pulled = [m["name"] for m in r.json().get("models", [])]
-    if not any(EMBED_MODEL in name for name in pulled):
-        return False, f"Embedding model '{EMBED_MODEL}' not pulled. Run: ollama pull {EMBED_MODEL}"
+    if not any(OLLAMA_MODEL in name for name in pulled):
+        return False, f"Embedding model '{OLLAMA_MODEL}' not pulled. Run: ollama pull {OLLAMA_MODEL}"
     return True, None
 
 
-def _embed_one(text: str) -> np.ndarray:
-    """Embed a single text via Ollama. Returns a (EMBED_DIM,) float32 array.
-    Empty / whitespace-only text returns zeros."""
+# ---------------------------------------------------------------------------
+# Sentence-Transformers in-process backend
+# ---------------------------------------------------------------------------
+
+_st_model_cache = None  # lazy-loaded SentenceTransformer instance
+
+
+def _load_st_model():
+    """Load the sentence-transformers model once per process. The first call
+    downloads ~90 MB to ~/.cache/huggingface and warms up the model
+    (~3s on CPU); subsequent calls are instant."""
+    global _st_model_cache
+    if _st_model_cache is not None:
+        return _st_model_cache
+    try:
+        from sentence_transformers import SentenceTransformer  # noqa: WPS433
+    except ImportError as e:
+        raise RuntimeError(
+            "EMBEDDING_BACKEND=sentence_transformers requires the "
+            "`sentence-transformers` package. Install with: "
+            "pip install sentence-transformers"
+        ) from e
+    print(f"[embed] loading sentence-transformers/{ST_MODEL} (first load ~3s)...")
+    _st_model_cache = SentenceTransformer(ST_MODEL)
+    return _st_model_cache
+
+
+def _embed_batch_st(texts: list[str]) -> np.ndarray:
+    """Encode a batch of texts in-process. Returns (N, ST_DIM) float32."""
+    if not texts:
+        return np.zeros((0, ST_DIM), dtype=np.float32)
+    model = _load_st_model()
+    # Replace empty strings with a placeholder so the encoder doesn't barf;
+    # we'll zero out the corresponding rows after.
+    cleaned = [t[:2000] if t and t.strip() else " " for t in texts]
+    vecs = model.encode(
+        cleaned,
+        batch_size=32,
+        show_progress_bar=False,
+        convert_to_numpy=True,
+        normalize_embeddings=False,
+    )
+    out = np.asarray(vecs, dtype=np.float32)
+    # Zero out rows that came from empty inputs so callers' index alignment
+    # (and downstream zero-vector handling) stays consistent with Ollama.
+    for i, t in enumerate(texts):
+        if not t or not t.strip():
+            out[i] = 0.0
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Ollama backend (per-text HTTP)
+# ---------------------------------------------------------------------------
+
+def _embed_one_ollama(text: str) -> np.ndarray:
     if not text or not text.strip():
-        return np.zeros(EMBED_DIM, dtype=np.float32)
+        return np.zeros(OLLAMA_DIM, dtype=np.float32)
     snippet = text[:2000]
     try:
         r = http_requests.post(
-            EMBED_URL,
-            json={"model": EMBED_MODEL, "prompt": snippet},
-            timeout=EMBED_TIMEOUT,
+            OLLAMA_URL,
+            json={"model": OLLAMA_MODEL, "prompt": snippet},
+            timeout=OLLAMA_TIMEOUT,
         )
         r.raise_for_status()
         data = r.json()
         emb = data.get("embedding")
-        if not emb or len(emb) != EMBED_DIM:
+        if not emb or len(emb) != OLLAMA_DIM:
             raise ValueError(f"unexpected embedding shape: {len(emb) if emb else 'none'}")
         return np.asarray(emb, dtype=np.float32)
     except Exception as e:
         print(f"[embed] failed: {e}")
-        return np.zeros(EMBED_DIM, dtype=np.float32)
+        return np.zeros(OLLAMA_DIM, dtype=np.float32)
+
+
+# Public single-text embed — kept for any external caller that wants a
+# one-shot encode (themes_runner / future LLM-driven flows).
+def _embed_one(text: str) -> np.ndarray:
+    if _backend() == "sentence_transformers":
+        return _embed_batch_st([text])[0]
+    return _embed_one_ollama(text)
 
 
 def embed_texts(
@@ -68,17 +178,24 @@ def embed_texts(
     post_ids: list[str] | None = None,
     log_progress: bool = True,
 ) -> np.ndarray:
-    """Embed a list of strings via Ollama. Returns (N, EMBED_DIM) float32 array.
+    """Embed a list of strings using the active backend (env var
+    `EMBEDDING_BACKEND` = `ollama` (default) | `sentence_transformers`).
+    Returns (N, dim) float32 array — dim depends on the active backend.
 
     If `post_ids` is provided, the per-review embedding cache (DB table
-    `review_embeddings`) is consulted first; only cache misses hit Ollama, and
-    fresh embeddings are written back. Lengths of `texts` and `post_ids` must
-    match when both are provided.
+    `review_embeddings`) is consulted first; only cache misses are computed,
+    and fresh embeddings are written back. The cache is keyed by
+    (post_id, model) so the two backends co-exist without poisoning each
+    other.
 
     Empty strings are kept in place as zero vectors so the output stays index-
     aligned with the input (callers depend on this for clustering)."""
+    backend = _backend()
+    model_name = active_model()
+    dim = active_dim()
+
     n = len(texts)
-    out = np.zeros((n, EMBED_DIM), dtype=np.float32)
+    out = np.zeros((n, dim), dtype=np.float32)
     if n == 0:
         return out
 
@@ -89,9 +206,8 @@ def embed_texts(
             raise ValueError(
                 f"texts ({n}) / post_ids ({len(post_ids)}) length mismatch"
             )
-        # Local import to avoid module-load cycles during db init.
         from database import get_cached_embeddings  # noqa: WPS433
-        cached_blobs = get_cached_embeddings(post_ids, EMBED_MODEL)
+        cached_blobs = get_cached_embeddings(post_ids, model_name)
 
     miss_indices: list[int] = []
     for i in range(n):
@@ -103,29 +219,48 @@ def embed_texts(
 
     if log_progress and post_ids is not None:
         print(
-            f"[embed] cache: {n - len(miss_indices)}/{n} hits, "
+            f"[embed/{backend}] cache: {n - len(miss_indices)}/{n} hits, "
             f"{len(miss_indices)} misses"
         )
 
-    # Miss phase: embed the cache misses, then write them back.
+    # Miss phase: compute the misses, then write them back.
     started = time.time()
     fresh_pids: list[str] = []
     fresh_blobs: list[bytes] = []
-    for j, i in enumerate(miss_indices):
-        emb = _embed_one(texts[i])
-        out[i] = emb
-        if post_ids is not None and texts[i] and texts[i].strip():
-            fresh_pids.append(post_ids[i])
-            fresh_blobs.append(emb.tobytes())
-        if log_progress and (j + 1) % 25 == 0:
-            print(
-                f"[embed] {j+1}/{len(miss_indices)} fresh embeddings in "
-                f"{time.time()-started:.1f}s"
-            )
+
+    if backend == "sentence_transformers":
+        # Batched encode — dramatically faster than per-text. The single call
+        # yields all embeddings for the misses at once.
+        miss_texts = [texts[i] for i in miss_indices]
+        if miss_texts:
+            batch = _embed_batch_st(miss_texts)
+            for j, i in enumerate(miss_indices):
+                out[i] = batch[j]
+                if post_ids is not None and texts[i] and texts[i].strip():
+                    fresh_pids.append(post_ids[i])
+                    fresh_blobs.append(batch[j].tobytes())
+            if log_progress:
+                print(
+                    f"[embed/st] {len(miss_texts)} fresh embeddings in "
+                    f"{time.time()-started:.1f}s"
+                )
+    else:
+        # Ollama backend — sequential HTTP per text.
+        for j, i in enumerate(miss_indices):
+            emb = _embed_one_ollama(texts[i])
+            out[i] = emb
+            if post_ids is not None and texts[i] and texts[i].strip():
+                fresh_pids.append(post_ids[i])
+                fresh_blobs.append(emb.tobytes())
+            if log_progress and (j + 1) % 25 == 0:
+                print(
+                    f"[embed/ollama] {j+1}/{len(miss_indices)} fresh embeddings in "
+                    f"{time.time()-started:.1f}s"
+                )
 
     if fresh_pids:
         from database import cache_embeddings  # noqa: WPS433
-        cache_embeddings(fresh_pids, EMBED_MODEL, fresh_blobs, EMBED_DIM)
+        cache_embeddings(fresh_pids, model_name, fresh_blobs, dim)
 
     return out
 

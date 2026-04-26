@@ -240,9 +240,20 @@ Verify: `curl http://localhost:11434/api/tags` should return JSON.
 ### 5c. Pull the models the dashboard uses
 
 ```bash
-ollama pull nomic-embed-text                  # embeddings — required for semantic & BERTopic
+ollama pull nomic-embed-text                  # embeddings — required for semantic & BERTopic (default backend)
 ollama pull mistral:7b                        # LLM — used by themes_llm + BERTopic naming
 ```
+
+> **Don't want to install Ollama for embeddings?** Set
+> `EMBEDDING_BACKEND=sentence_transformers` and the backend uses an
+> in-process Hugging Face model (`all-MiniLM-L6-v2`, 90 MB) instead of
+> Ollama. Adds ~1 GB of `torch` to the venv but skips the Ollama install
+> entirely. Useful for cloud deploys where Ollama isn't available, and for
+> users who only want one local process. The cache (`review_embeddings`)
+> tracks both backends side-by-side keyed by model name, so switching
+> doesn't break anything — it just triggers a re-embed in the new model's
+> namespace. See `backend/themes_embeddings.py` for the full backend
+> contract.
 
 **Pick a chat model that fits your RAM:**
 
