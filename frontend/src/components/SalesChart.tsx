@@ -19,6 +19,12 @@ import { formatMonth } from '../utils/format'
 import { Card, CardContent } from './ui/card'
 import { SourceDistributionDialog } from './SourceDistributionDialog'
 
+interface SecondarySeriesSpec {
+  name: string
+  color: string
+  values: { month: string; units: number }[]
+}
+
 interface Props {
   // Canonical monthly time series with imputation marks + inline anomaly
   // flags. Always rendered when present.
@@ -28,6 +34,9 @@ interface Props {
   // draws a "today" reference line at the boundary.
   forecast: ForecastResult | null
   displayName?: string
+  // Optional second line — used by brand-mode to overlay FADA Retail on
+  // top of the RushLane-summed bars for cross-source comparison.
+  secondarySeries?: SecondarySeriesSpec
 }
 
 interface Row {
@@ -46,6 +55,8 @@ interface Row {
   avg: number | null
   // Anomaly z-score, or null
   anomalyZ: number | null
+  // Optional secondary series value (e.g. FADA Retail in brand mode)
+  secondary: number | null
   // Reference back to the source SeriesHistoryPoint so click handlers can
   // open the per-source distribution dialog without re-querying.
   point: SeriesHistoryPoint | null
@@ -60,9 +71,21 @@ function rollingAvg(values: (number | null)[], window = 3): (number | null)[] {
   })
 }
 
-function buildRows(series: SalesSeriesResponse | null, forecast: ForecastResult | null): Row[] {
+function buildRows(
+  series: SalesSeriesResponse | null,
+  forecast: ForecastResult | null,
+  secondarySeries?: SecondarySeriesSpec,
+): Row[] {
   const rows: Row[] = []
   const histVals: (number | null)[] = []
+
+  // Index secondary by month for O(1) lookup while building the row list.
+  const secondaryByMonth = new Map<string, number>()
+  if (secondarySeries) {
+    for (const s of secondarySeries.values) {
+      secondaryByMonth.set(s.month, s.units)
+    }
+  }
 
   if (series) {
     for (const h of series.history) {
@@ -79,6 +102,7 @@ function buildRows(series: SalesSeriesResponse | null, forecast: ForecastResult 
         bandHeight: null,
         avg: null, // filled below
         anomalyZ: h.anomaly?.z_score ?? null,
+        secondary: secondaryByMonth.get(h.month) ?? null,
         point: h,
       })
     }
@@ -106,6 +130,7 @@ function buildRows(series: SalesSeriesResponse | null, forecast: ForecastResult 
         bandHeight: height,
         avg: null,
         anomalyZ: null,
+        secondary: null,
         point: null,
       })
     }
@@ -124,7 +149,7 @@ function findTodayLabel(rows: Row[]): string | null {
   return null
 }
 
-export function SalesChart({ series, forecast, displayName }: Props) {
+export function SalesChart({ series, forecast, displayName, secondarySeries }: Props) {
   // Active dialog point — set when the user clicks a historical bar.
   const [activePoint, setActivePoint] = useState<SeriesHistoryPoint | null>(null)
 
@@ -138,7 +163,7 @@ export function SalesChart({ series, forecast, displayName }: Props) {
     )
   }
 
-  const rows = buildRows(series, forecast)
+  const rows = buildRows(series, forecast, secondarySeries)
   const todayLabel = forecast ? findTodayLabel(rows) : null
   const intervalPct = forecast ? Math.round(forecast.interval_width * 100) : 95
   const hasMultiSourceMonths = series.history.some(h => h.n_sources >= 2)
@@ -201,13 +226,15 @@ export function SalesChart({ series, forecast, displayName }: Props) {
                   avg: '3-mo Rolling Avg',
                   yhat: 'Forecast',
                   bandHeight: `${intervalPct}% CI`,
+                  secondary: secondarySeries?.name ?? 'Secondary',
                 }
                 return m[v as string] ?? v
               }}
             />
 
             {/* Confidence band — invisible base + coloured top so it renders
-                as a band only across the forecast horizon. */}
+                as a band only across the forecast horizon. The base stays out
+                of the legend; the top contributes one entry. */}
             {forecast && (
               <Area
                 type="monotone"
@@ -228,7 +255,6 @@ export function SalesChart({ series, forecast, displayName }: Props) {
                 fill="#a78bfa"
                 fillOpacity={0.18}
                 isAnimationActive={false}
-                legendType="none"
               />
             )}
 
@@ -240,7 +266,6 @@ export function SalesChart({ series, forecast, displayName }: Props) {
               fill="#3b82f6"
               radius={[4, 4, 0, 0]}
               isAnimationActive={false}
-              legendType="none"
               cursor="pointer"
               onClick={onBarClick}
             />
@@ -252,22 +277,39 @@ export function SalesChart({ series, forecast, displayName }: Props) {
               strokeDasharray="3 3"
               radius={[4, 4, 0, 0]}
               isAnimationActive={false}
-              legendType="none"
               cursor="pointer"
               onClick={onBarClick}
             />
 
-            {/* 3-month rolling avg — orange line over historical points */}
-            <Line
-              type="monotone"
-              dataKey="avg"
-              stroke="#f59e0b"
-              strokeWidth={2}
-              dot={false}
-              connectNulls={false}
-              isAnimationActive={false}
-              legendType="none"
-            />
+            {/* 3-month rolling avg — orange line over historical points.
+                Hidden when a secondarySeries is present (the secondary line
+                takes the visual slot at brand-mode level). */}
+            {!secondarySeries && (
+              <Line
+                type="monotone"
+                dataKey="avg"
+                stroke="#f59e0b"
+                strokeWidth={2}
+                dot={false}
+                connectNulls={false}
+                isAnimationActive={false}
+              />
+            )}
+
+            {/* Secondary series (e.g. FADA Retail in brand mode) — drawn as
+                a line with dots over the historical bars so the user can see
+                the cross-source spread at a glance. */}
+            {secondarySeries && (
+              <Line
+                type="monotone"
+                dataKey="secondary"
+                stroke={secondarySeries.color}
+                strokeWidth={2}
+                dot={{ fill: secondarySeries.color, r: 3 }}
+                connectNulls={false}
+                isAnimationActive={false}
+              />
+            )}
 
             {/* Forecast line (only on rows that have yhat) */}
             {forecast && (
@@ -279,7 +321,6 @@ export function SalesChart({ series, forecast, displayName }: Props) {
                 dot={{ fill: '#a78bfa', r: 3 }}
                 connectNulls={false}
                 isAnimationActive={false}
-                legendType="none"
               />
             )}
 

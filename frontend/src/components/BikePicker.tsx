@@ -95,16 +95,22 @@ function BrandDropdown({
 // Model dropdown — populated based on selected brand
 // ---------------------------------------------------------------------------
 
+// Sentinel passed via onPick when the user picks "All models". Kept inside
+// this module so callers convert it into a brand-level state change.
+const ALL_MODELS = '__all__' as const
+
 function ModelDropdown({
   models,
   selectedId,
   onPick,
   loading,
+  brandTotalLabel,
 }: {
   models: BrandModel[]
-  selectedId: string
+  selectedId: string | null
   onPick: (id: string) => void
   loading: boolean
+  brandTotalLabel: string
 }) {
   const [open, setOpen] = useState(false)
   const [filter, setFilter] = useState('')
@@ -145,6 +151,8 @@ function ModelDropdown({
     }
   }
 
+  const isAllSelected = selectedId === null
+
   return (
     <div className="relative" ref={ref}>
       <button
@@ -155,12 +163,18 @@ function ModelDropdown({
         <div className="text-left flex-1 min-w-0">
           <p className="text-[10px] text-muted-foreground/70 uppercase tracking-wider">Model</p>
           <p className="text-foreground font-semibold leading-tight truncate">
-            {selected?.canonical ?? (loading ? 'Loading…' : 'Choose model')}
+            {isAllSelected
+              ? 'All models'
+              : (selected?.canonical ?? (loading ? 'Loading…' : 'Choose model'))}
           </p>
-          {selected?.in_db && (
-            <p className="text-xs text-muted-foreground">
-              {selected.months_tracked} months · {formatUnits(selected.total_units)} units
-            </p>
+          {isAllSelected ? (
+            <p className="text-xs text-muted-foreground">{brandTotalLabel}</p>
+          ) : (
+            selected?.in_db && (
+              <p className="text-xs text-muted-foreground">
+                {selected.months_tracked} months · {formatUnits(selected.total_units)} units
+              </p>
+            )
           )}
         </div>
         <svg
@@ -184,6 +198,18 @@ function ModelDropdown({
             />
           </div>
           <div className="overflow-y-auto py-1">
+            {/* Always-visible "All" entry at the top, regardless of filter */}
+            <button
+              onClick={() => { onPick(ALL_MODELS); setOpen(false); setFilter('') }}
+              className={`w-full flex items-center gap-3 px-3 py-2 text-left transition-colors border-b border-border ${
+                isAllSelected ? 'bg-primary/15' : 'hover:bg-accent/50'
+              }`}
+            >
+              <div className="flex-1 min-w-0">
+                <p className="text-sm text-foreground font-medium">All models</p>
+                <p className="text-xs text-muted-foreground">{brandTotalLabel}</p>
+              </div>
+            </button>
             {withData.length > 0 && (
               <div className="mb-1">
                 <p className="text-[10px] text-muted-foreground/70 uppercase tracking-wider px-3 py-1">
@@ -260,47 +286,80 @@ function useBrands() {
 // ---------------------------------------------------------------------------
 
 export function BikePicker() {
-  const { selectedBikeId, setSelectedBikeId } = useSelectedBike()
+  const {
+    selectedBikeId,
+    selectedBrandId,
+    setSelectedBike,
+    setSelectedBrandAll,
+  } = useSelectedBike()
   const { brands } = useBrands()
 
   const brandIds = useMemo(() => brands.map(b => b.id), [brands])
-  const initialBrand = brandIdFromBikeId(selectedBikeId, brandIds) || brands[0]?.id || null
 
-  const [brandId, setBrandId] = useState<string | null>(initialBrand)
-  // Keep brand in sync if selectedBikeId changes externally
+  // Derive the active brand: if a bike is selected, infer from its id;
+  // otherwise use the explicitly-set selectedBrandId; fall back to the first
+  // brand. Single-direction derivation — the context owns the source of truth.
+  const activeBrandId =
+    (selectedBikeId ? brandIdFromBikeId(selectedBikeId, brandIds) : null) ||
+    selectedBrandId ||
+    brands[0]?.id ||
+    null
+
+  // If we inferred the brand from a bike id, sync it back to the context so
+  // subsequent renders don't keep re-deriving it on every render.
   useEffect(() => {
-    const inferred = brandIdFromBikeId(selectedBikeId, brandIds)
-    if (inferred && inferred !== brandId) setBrandId(inferred)
-  }, [selectedBikeId, brandIds])
+    if (
+      selectedBikeId &&
+      activeBrandId &&
+      activeBrandId !== selectedBrandId
+    ) {
+      // Use setSelectedBike to keep the bike + brand in sync without
+      // resetting the bike to null.
+      setSelectedBike(selectedBikeId, activeBrandId)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedBikeId, activeBrandId])
 
   const modelsQ = useQuery({
-    queryKey: ['brandModels', brandId],
-    queryFn: () => fetchBrandModels(brandId!),
-    enabled: !!brandId,
+    queryKey: ['brandModels', activeBrandId],
+    queryFn: () => fetchBrandModels(activeBrandId!),
+    enabled: !!activeBrandId,
     refetchInterval: 5000,
   })
 
+  const models = modelsQ.data ?? []
+
+  // Sub-line under "All models" in the dropdown: count + brand total
+  const brandTotalLabel = (() => {
+    const inDb = models.filter(m => m.in_db)
+    if (!inDb.length) return 'No models with data yet'
+    const total = inDb.reduce((s, m) => s + (m.total_units || 0), 0)
+    return `${inDb.length} models · ${formatUnits(total)} units`
+  })()
+
   function pickBrand(id: string) {
-    setBrandId(id)
-    // Auto-select the first bike in the brand that has data, else the first model
-    fetchBrandModels(id).then(models => {
-      const next = models.find(m => m.in_db) ?? models[0]
-      if (next) setSelectedBikeId(next.id)
-    })
+    // Land at the brand-level "All" view by default; user picks a model
+    // explicitly to drill in.
+    setSelectedBrandAll(id)
   }
 
   function pickModel(id: string) {
-    setSelectedBikeId(id)
+    if (id === ALL_MODELS) {
+      if (activeBrandId) setSelectedBrandAll(activeBrandId)
+      return
+    }
+    if (activeBrandId) setSelectedBike(id, activeBrandId)
   }
 
   return (
     <div className="flex items-center gap-2 flex-wrap">
-      <BrandDropdown brands={brands} selectedId={brandId} onPick={pickBrand} />
+      <BrandDropdown brands={brands} selectedId={activeBrandId} onPick={pickBrand} />
       <ModelDropdown
-        models={modelsQ.data ?? []}
+        models={models}
         selectedId={selectedBikeId}
         onPick={pickModel}
         loading={modelsQ.isLoading}
+        brandTotalLabel={brandTotalLabel}
       />
     </div>
   )

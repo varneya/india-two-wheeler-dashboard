@@ -18,6 +18,7 @@ export function RefreshButton() {
   }
 
   async function handleRefresh() {
+    if (!selectedBikeId) return
     setLoading(true)
     setError(null)
     try {
@@ -47,6 +48,10 @@ export function RefreshButton() {
   }
 
   useEffect(() => () => stopPolling(), [])
+
+  // Brand-mode: per-bike refresh doesn't apply. The Data Refresh tab
+  // covers brand-wide scraping.
+  if (!selectedBikeId) return null
 
   return (
     <div className="flex items-center gap-3">

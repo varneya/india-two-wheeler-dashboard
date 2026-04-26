@@ -104,3 +104,54 @@ export const triggerForecastRefresh = (
 
 export const fetchForecastStatus = (bikeId: string): Promise<ForecastStatus> =>
   api.get<ForecastStatus>(`/bikes/${bikeId}/forecast/status`).then(r => r.data)
+
+// ---------------------------------------------------------------------------
+// Brand-level "All models" view — same response shapes as bike-level so the
+// chart + metric components reuse with no branching.
+// ---------------------------------------------------------------------------
+
+export interface BrandSecondaryPoint {
+  month: string
+  units: number
+}
+
+export interface BrandSeriesResponse {
+  brand_id: string
+  history: import('../types/sales').SeriesHistoryPoint[]
+  anomalies: import('../types/sales').SeriesAnomaly[]
+  // Optional secondary line — FADA retail values per month for the cross-source
+  // comparison overlay on the brand-level chart.
+  secondary_series: BrandSecondaryPoint[]
+}
+
+export const fetchBrandSalesSeries = (brandId: string): Promise<BrandSeriesResponse> =>
+  api.get<BrandSeriesResponse>(`/brands/${brandId}/sales/series`).then(r => r.data)
+
+export const fetchBrandMetrics = (brandId: string) =>
+  api.get<import('../types/sales').Metrics>(`/brands/${brandId}/metrics`).then(r => r.data)
+
+export const fetchBrandForecast = (
+  brandId: string,
+  opts?: { horizon?: number; interval_width?: number; refresh?: boolean },
+): Promise<ForecastResult | ForecastPending> => {
+  const params = new URLSearchParams()
+  if (opts?.horizon) params.set('horizon', String(opts.horizon))
+  if (opts?.interval_width) params.set('interval_width', String(opts.interval_width))
+  if (opts?.refresh) params.set('refresh', 'true')
+  const qs = params.toString() ? `?${params.toString()}` : ''
+  return api.get(`/brands/${brandId}/forecast${qs}`).then(r => r.data)
+}
+
+export const triggerBrandForecastRefresh = (
+  brandId: string,
+  opts?: { horizon?: number; interval_width?: number },
+): Promise<{ status: string }> => {
+  const params = new URLSearchParams()
+  if (opts?.horizon) params.set('horizon', String(opts.horizon))
+  if (opts?.interval_width) params.set('interval_width', String(opts.interval_width))
+  const qs = params.toString() ? `?${params.toString()}` : ''
+  return api.post(`/brands/${brandId}/forecast/refresh${qs}`).then(r => r.data)
+}
+
+export const fetchBrandForecastStatus = (brandId: string): Promise<ForecastStatus> =>
+  api.get<ForecastStatus>(`/brands/${brandId}/forecast/status`).then(r => r.data)

@@ -19,9 +19,24 @@ function formatUnits(n: number): string {
   return String(n)
 }
 
+// Brand IDs known to the catalogue, longest-prefix-first so multi-word
+// brand_ids ('royal-enfield', 'harley-davidson') match before single-word ones.
+const KNOWN_BRAND_IDS = [
+  'royal-enfield', 'harley-davidson',
+  'yamaha', 'honda', 'hero', 'bajaj', 'tvs', 'suzuki', 'ktm',
+  'aprilia', 'kawasaki', 'triumph', 'ducati', 'bmw', 'husqvarna',
+] as const
+
+function brandFromBikeId(bikeId: string): string {
+  for (const b of KNOWN_BRAND_IDS) {
+    if (bikeId === b || bikeId.startsWith(b + '-')) return b
+  }
+  return bikeId.split('-')[0]
+}
+
 export function BikeCommandPalette() {
   const [open, setOpen] = useState(false)
-  const { setSelectedBikeId } = useSelectedBike()
+  const { setSelectedBike } = useSelectedBike()
   const { data: bikes = [] } = useQuery({ queryKey: ['bikes'], queryFn: fetchBikes })
 
   // Group by brand for nicer rendering
@@ -50,7 +65,7 @@ export function BikeCommandPalette() {
   }, [])
 
   function pick(id: string) {
-    setSelectedBikeId(id)
+    setSelectedBike(id, brandFromBikeId(id))
     setOpen(false)
   }
 

@@ -585,6 +585,37 @@ def get_retail_brand_sales(brand_id: str | None = None,
     return [dict(r) for r in rows]
 
 
+def get_brand_metrics(brand_id: str) -> dict:
+    """Brand-level aggregate metrics (latest / peak / total / months_tracked),
+    summed across every bike in the brand from RushLane wholesale rows.
+    Same response shape as `get_metrics(bike_id)` so the frontend can reuse
+    the MetricsCards component without branching."""
+    sales = get_wholesale_brand_totals(brand_id)
+    if not sales:
+        return {
+            "latest_month": None, "peak_month": None, "total_units": 0,
+            "months_tracked": 0, "last_refresh": None,
+        }
+
+    peak = max(sales, key=lambda r: r["units"])
+    latest = sales[-1]
+    total = sum(r["units"] for r in sales)
+
+    last_refresh = None
+    with get_conn() as conn:
+        row = conn.execute("SELECT run_at FROM scrape_log ORDER BY id DESC LIMIT 1").fetchone()
+        if row:
+            last_refresh = row["run_at"]
+
+    return {
+        "latest_month": {"month": latest["month"], "units_sold": int(latest["units"])},
+        "peak_month": {"month": peak["month"], "units_sold": int(peak["units"])},
+        "total_units": int(total),
+        "months_tracked": len(sales),
+        "last_refresh": last_refresh,
+    }
+
+
 def get_wholesale_brand_totals(brand_id: str) -> list[dict]:
     """Sum model-level wholesale rows up to brand-monthly totals.
     `brand_id` matches the prefix of bike_id (e.g. 'yamaha' -> 'yamaha-*').

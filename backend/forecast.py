@@ -378,6 +378,160 @@ def build_series_payload(bike_id: str) -> dict:
     }
 
 
+# ---------------------------------------------------------------------------
+# Brand-level helpers — used by the "All models" view. Same pipeline shape
+# as the per-bike helpers above; the only difference is the input series is
+# RushLane sums across every bike in the brand.
+# ---------------------------------------------------------------------------
+
+def _brand_launch_month(brand_id: str) -> str | None:
+    """Earliest observed sales month across all bikes in the brand."""
+    sales = database.get_wholesale_brand_totals(brand_id)
+    if not sales:
+        return None
+    return min(s["month"] for s in sales)
+
+
+def build_brand_complete_index(brand_id: str) -> pd.Series:
+    """Brand-summed Period-indexed (freq='M') float Series spanning the
+    earliest observed brand-month → most recent. Missing months are NaN.
+
+    Sums the RushLane (wholesale) values across every bike whose brand
+    matches. FADA brand-level retail values are NOT folded in here — they
+    surface separately in the chart as a secondary line and as a second row
+    in the per-month distribution dialog. This keeps the imputation +
+    Prophet pipeline driven by a single coherent source.
+    """
+    summed = database.get_wholesale_brand_totals(brand_id)
+    if not summed:
+        return pd.Series(dtype="float64")
+    launch = _brand_launch_month(brand_id)
+    if not launch:
+        return pd.Series(dtype="float64")
+    end = max(s["month"] for s in summed)
+    idx = pd.period_range(
+        start=_month_to_period(launch), end=_month_to_period(end), freq="M"
+    )
+    by_month = {_month_to_period(s["month"]): float(s["units"]) for s in summed}
+    values = [by_month.get(p, np.nan) for p in idx]
+    return pd.Series(values, index=idx, dtype="float64")
+
+
+def build_brand_series_payload(brand_id: str) -> dict:
+    """Mirror of build_series_payload but for brand-summed series. Adds a
+    `secondary_series` block with FADA retail values per month so the chart
+    can draw the cross-source comparison as a second line. Each history row
+    also lists the per-source values (RushLane sum + FADA retail) so the
+    distribution dialog opens with the same shape as bike-level."""
+    raw = build_brand_complete_index(brand_id)
+    if raw.empty:
+        return {
+            "brand_id": brand_id,
+            "history": [],
+            "anomalies": [],
+            "secondary_series": [],
+        }
+    imputed_series, meta = impute(raw)
+    anomalies = detect_anomalies(imputed_series)
+    anomaly_by_month = {a["month"]: a for a in anomalies}
+
+    rushlane_summed = {
+        s["month"]: int(s["units"])
+        for s in database.get_wholesale_brand_totals(brand_id)
+    }
+    fada_rows = {
+        r["month"]: int(r["units"])
+        for r in database.get_retail_brand_sales(brand_id=brand_id)
+    }
+
+    history_payload: list[dict] = []
+    for i, m in enumerate(meta):
+        v = imputed_series.iloc[i]
+        sources = []
+        rl = rushlane_summed.get(m["month"])
+        if rl is not None:
+            sources.append({
+                "source": "rushlane",
+                "units_sold": rl,
+                "source_url": None,
+            })
+        fada = fada_rows.get(m["month"])
+        if fada is not None:
+            sources.append({
+                "source": "fada_retail",
+                "units_sold": fada,
+                "source_url": None,
+            })
+        units_only = [s["units_sold"] for s in sources]
+        stddev = float(np.std(units_only, ddof=1)) if len(units_only) >= 2 else None
+        anomaly_entry = anomaly_by_month.get(m["month"])
+        history_payload.append({
+            "month": m["month"],
+            "units": float(v),
+            "imputed": m["imputed"],
+            "impute_method": m["impute_method"],
+            "anomaly": (
+                {"is_anomaly": True, "z_score": anomaly_entry["z_score"]}
+                if anomaly_entry else None
+            ),
+            "n_sources": len(sources),
+            "stddev": stddev,
+            "sources": sources,
+        })
+
+    secondary_payload = [
+        {"month": m, "units": int(u)}
+        for m, u in sorted(fada_rows.items())
+    ]
+
+    return {
+        "brand_id": brand_id,
+        "history": history_payload,
+        "anomalies": anomalies,
+        "secondary_series": secondary_payload,
+    }
+
+
+def run_brand_forecast(
+    brand_id: str, horizon: int = 6, interval_width: float = 0.95
+) -> dict:
+    """Brand-level Prophet forecast — fits on the brand-summed RushLane
+    series. Returns the same payload shape as run_forecast (history, forecast,
+    anomalies, low_confidence) so the frontend can reuse the per-bike chart
+    layer wholesale."""
+    raw = build_brand_complete_index(brand_id)
+    if raw.empty:
+        return {
+            "error": f"No sales data for brand {brand_id}",
+            "history": [],
+            "forecast": [],
+        }
+
+    imputed_series, meta = impute(raw)
+    history_payload = []
+    for i, m in enumerate(meta):
+        v = imputed_series.iloc[i]
+        history_payload.append({
+            "month": m["month"],
+            "units": float(v),
+            "imputed": m["imputed"],
+            "impute_method": m["impute_method"],
+        })
+
+    forecast_payload = fit_and_forecast(
+        imputed_series, horizon=horizon, interval_width=interval_width
+    )
+    anomalies = detect_anomalies(imputed_series)
+
+    return {
+        "brand_id": brand_id,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "history": history_payload,
+        "anomalies": anomalies,
+        **forecast_payload,
+    }
+
+
 def run_forecast(bike_id: str, horizon: int = 6, interval_width: float = 0.95) -> dict:
     """Build the imputed series, fit Prophet, return the full payload."""
     raw = build_complete_index(bike_id)

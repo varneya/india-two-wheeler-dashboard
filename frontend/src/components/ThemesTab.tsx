@@ -1,5 +1,7 @@
+import { useQuery } from '@tanstack/react-query'
 import { Cpu, Loader2, Sparkles } from 'lucide-react'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { fetchBikes } from '../api/bikesApi'
 import {
   fetchHardware,
   fetchPullProgress,
@@ -576,10 +578,44 @@ function ThemeCard({ theme, rank }: { theme: Theme; rank: number }) {
 // ---------------------------------------------------------------------------
 // Main ThemesTab
 // ---------------------------------------------------------------------------
+// KNOWN_BRAND_IDS used for prefix matching when deriving the brand from a
+// bike id. Longest first so 'royal-enfield' beats 'royal'.
+const KNOWN_BRAND_IDS = [
+  'royal-enfield', 'harley-davidson',
+  'yamaha', 'honda', 'hero', 'bajaj', 'tvs', 'suzuki', 'ktm',
+  'aprilia', 'kawasaki', 'triumph', 'ducati', 'bmw', 'husqvarna',
+] as const
+
+function brandPrefix(bikeId: string): string | null {
+  for (const b of KNOWN_BRAND_IDS) {
+    if (bikeId === b || bikeId.startsWith(b + '-')) return b
+  }
+  return null
+}
+
 export function ThemesTab() {
-  const { selectedBikeId } = useSelectedBike()
+  const { selectedBikeId, selectedBrandId } = useSelectedBike()
+  const isBrandMode = selectedBikeId === null
+
+  // The Themes API is bike-keyed even when we're running a brand-pool
+  // analysis (the result needs SOME bike to be saved against). When the
+  // user is in All mode, fall back to the first bike in the brand that
+  // has reviews — typically the most popular bike of that brand.
+  const { data: allBikes = [] } = useQuery({ queryKey: ['bikes'], queryFn: fetchBikes })
+  const effectiveBikeId = useMemo(() => {
+    if (selectedBikeId) return selectedBikeId
+    if (!selectedBrandId) return null
+    const candidates = allBikes.filter(b => brandPrefix(b.id) === selectedBrandId)
+    const withReviews = candidates.find(b => (b as { has_reviews?: boolean }).has_reviews)
+    return (withReviews?.id) ?? candidates[0]?.id ?? null
+  }, [selectedBikeId, selectedBrandId, allBikes])
+
   const [method, setMethod] = useState<Method>('keyword')
-  const [poolScope, setPoolScope] = useState<PoolScope>('bike')
+  // In brand mode the pool is forced to 'brand' (no choice to make); in
+  // bike mode the user picks via the toggle below.
+  const [bikePoolScope, setBikePoolScope] = useState<PoolScope>('bike')
+  const poolScope: PoolScope = isBrandMode ? 'brand' : bikePoolScope
+  const setPoolScope = (s: PoolScope) => setBikePoolScope(s)
   const [nClusters, setNClusters] = useState(6)
   const [llmBackend, setLlmBackend] = useState('claude')
   const [llmNaming, setLlmNaming] = useState(true)  // BERTopic — refine names with Mistral
@@ -603,17 +639,17 @@ export function ThemesTab() {
       .finally(() => setHwLoading(false))
   }, [])
 
-  // Load last result whenever bike changes
+  // Load last result whenever the effective bike (per-bike or brand-derived) changes
   useEffect(() => {
     setResult(null)
     setError(null)
-    if (!selectedBikeId) return
-    fetchThemes(selectedBikeId)
+    if (!effectiveBikeId) return
+    fetchThemes(effectiveBikeId)
       .then(r => {
         if (r.themes) setResult(r)
       })
       .catch(() => {})
-  }, [selectedBikeId])
+  }, [effectiveBikeId])
 
   function stopPolling() {
     if (pollRef.current) {
@@ -638,8 +674,13 @@ export function ThemesTab() {
         ? { keywords: keywordsMap }
         : {}
 
+    if (!effectiveBikeId) {
+      setError('Pick a model (or a brand with at least one bike) to run themes')
+      setRunning(false)
+      return
+    }
     try {
-      await triggerThemesAnalysis(selectedBikeId, method, config, poolScope)
+      await triggerThemesAnalysis(effectiveBikeId, method, config, poolScope)
     } catch (e) {
       setError(String(e))
       setRunning(false)
@@ -649,11 +690,11 @@ export function ThemesTab() {
     // Poll status
     pollRef.current = setInterval(async () => {
       try {
-        const status = await fetchThemesStatus(selectedBikeId)
+        const status = await fetchThemesStatus(effectiveBikeId)
         if (!status.running) {
           stopPolling()
           setRunning(false)
-          const latest = await fetchThemes(selectedBikeId)
+          const latest = await fetchThemes(effectiveBikeId)
           if (latest.themes) {
             setResult(latest)
           } else if (latest.error) {
@@ -734,7 +775,10 @@ export function ThemesTab() {
         />
       </div>
 
-      {/* Pool-scope toggle: bike-only vs brand-wide */}
+      {/* Pool-scope toggle: bike-only vs brand-wide. Hidden in brand mode
+          since the pool is always brand-wide and there's no per-bike target
+          to localize against. */}
+      {!isBrandMode && (
       <div>
         <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">
           Review Pool
@@ -770,6 +814,13 @@ export function ThemesTab() {
           ))}
         </div>
       </div>
+      )}
+
+      {isBrandMode && (
+        <div className="text-xs text-muted-foreground border-l-2 border-primary/40 pl-3 leading-relaxed">
+          You're in <strong className="text-foreground">All models</strong> mode — themes are clustered across every bike in the brand. Pick a specific model from the dropdown to localize and see "% this bike" badges per theme.
+        </div>
+      )}
 
       {/* Run button */}
       <Button

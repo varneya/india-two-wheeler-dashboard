@@ -29,6 +29,7 @@ export function ReviewRefreshButton() {
   }
 
   async function handleRefresh() {
+    if (!selectedBikeId) return
     setLoading(true)
     setError(null)
     try {
@@ -103,7 +104,7 @@ export function useReviewSummary() {
   const { selectedBikeId } = useSelectedBike()
   return useQuery({
     queryKey: ['reviewSummary', selectedBikeId],
-    queryFn: () => fetchReviewSummary(selectedBikeId),
+    queryFn: () => fetchReviewSummary(selectedBikeId!),
     enabled: !!selectedBikeId,
   })
 }
@@ -115,7 +116,7 @@ export function ReviewList() {
   const { selectedBikeId } = useSelectedBike()
   const reviewsQ = useQuery({
     queryKey: ['reviews', selectedBikeId],
-    queryFn: () => fetchReviews(selectedBikeId),
+    queryFn: () => fetchReviews(selectedBikeId!),
     enabled: !!selectedBikeId,
   })
 

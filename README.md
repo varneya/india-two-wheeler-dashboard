@@ -32,14 +32,23 @@ hosted-frontend + local-backend deployment topology) see
 
 ## Features
 
+- **Brand-level "All models" view** — picking a brand lands on a
+  brand-summed chart by default (RushLane wholesale bars + FADA retail
+  line overlay + brand-summed Prophet forecast). Drill into a specific
+  bike for the per-bike view; pick "All" to zoom back out.
 - **Per-bike sales view** — monthly chart, peak / latest / total cards,
   staleness warnings, MoM deltas. Imputed months are visibly marked
   (lighter dashed bars) and historical anomalies surface as amber dots.
 - **Predictive layer** — same chart toggles in a Prophet forecast (3–24
   months out) with a 95% confidence band, plus a "Next month" tile in
-  the metrics row. Imputation fills gaps using priority `seasonal_naive
-  → linear → ffill → median` so a few missed scrape months don't break
-  the forecast.
+  the metrics row. Works at both brand and bike level. Imputation fills
+  gaps using priority `seasonal_naive → linear → ffill → median` so a
+  few missed scrape months don't break the forecast.
+- **Per-source distribution dialog** — click any historical bar to see
+  every source that reported a value for that month (RushLane, FADA,
+  any future scraper or OCR'd source) with their values, the median
+  (used as the canonical chart value), and an at-a-glance spread
+  summary.
 - **Cross-source comparison** — RushLane (manufacturer-reported) vs FADA
   (dealer registrations from Vahan) for each brand
 - **Compare tab** — overlay 2–4 bikes' monthly sales on one chart

@@ -127,7 +127,7 @@ flowchart TB
     end
 
     subgraph Backend["FastAPI — :8000 (backend/main.py)"]
-        E_BR["/api/brands<br/>/api/brands/{id}/models<br/>/api/brands/{id}/wholesale-vs-retail"]
+        E_BR["/api/brands<br/>/api/brands/{id}/models<br/>/api/brands/{id}/wholesale-vs-retail<br/>/api/brands/{id}/sales/series<br/>/api/brands/{id}/metrics<br/>/api/brands/{id}/forecast (lazy)<br/>/api/brands/{id}/forecast/refresh<br/>/api/brands/{id}/forecast/status"]
         E_BK["/api/bikes · /api/bikes/{id}<br/>/api/bikes/{id}/sales<br/>/api/bikes/{id}/sales/series<br/>/api/bikes/{id}/metrics<br/>/api/bikes/{id}/forecast (lazy)<br/>/api/bikes/{id}/forecast/refresh<br/>/api/bikes/{id}/forecast/status<br/>/api/bikes/{id}/anomalies<br/>/compare?ids=..."]
         E_RV["/api/bikes/{id}/reviews<br/>/api/bikes/{id}/reviews/summary"]
         E_REF["/api/refresh-all<br/>/api/refresh-all/status"]

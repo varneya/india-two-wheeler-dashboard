@@ -716,6 +716,122 @@ def get_bike_sales_series(bike_id: str):
 
 
 # ===========================================================================
+# Brand-level Sales / Forecast — the "All models" view
+# ===========================================================================
+# These mirror the per-bike endpoints so the frontend can branch by URL
+# without component changes. Forecast cache + state dicts are reused with
+# a "brand:" prefix on the scope key so bike + brand entries don't collide.
+
+def _brand_scope(brand_id: str) -> str:
+    return f"brand:{brand_id}"
+
+
+def _do_brand_forecast(brand_id: str, horizon: int, interval_width: float):
+    scope = _brand_scope(brand_id)
+    with _forecast_lock:
+        _forecast_state[scope] = {
+            "stage": "fitting",
+            "started_at": time.time(),
+            "error": None,
+        }
+    try:
+        result = forecast_mod.run_brand_forecast(
+            brand_id, horizon=horizon, interval_width=interval_width
+        )
+        key = _forecast_cache_key(scope, horizon, interval_width)
+        _forecast_cache[key] = result
+        _forecast_cache_meta[key] = time.time()
+        with _forecast_lock:
+            _forecast_state[scope] = {
+                "stage": "done",
+                "started_at": _forecast_state[scope]["started_at"],
+                "finished_at": time.time(),
+                "error": None,
+            }
+    except Exception as e:
+        print(f"[forecast/brand] {brand_id} failed: {e}")
+        with _forecast_lock:
+            _forecast_state[scope] = {
+                "stage": "error",
+                "started_at": _forecast_state.get(scope, {}).get("started_at"),
+                "finished_at": time.time(),
+                "error": str(e),
+            }
+
+
+@app.get("/api/brands/{brand_id}/sales/series")
+def get_brand_sales_series(brand_id: str):
+    """Brand-level enriched history (RushLane sums by month + FADA per-month
+    secondary series). Same shape as the bike endpoint plus a `secondary_series`
+    block that the chart renders as the cross-source FADA line."""
+    return forecast_mod.build_brand_series_payload(brand_id)
+
+
+@app.get("/api/brands/{brand_id}/metrics")
+def get_brand_metrics(brand_id: str):
+    return database.get_brand_metrics(brand_id)
+
+
+@app.get("/api/brands/{brand_id}/forecast")
+def get_brand_forecast(
+    brand_id: str,
+    horizon: int = Query(6, ge=1, le=24),
+    interval_width: float = Query(0.95, gt=0, lt=1),
+    refresh: bool = Query(False, description="Force re-fit even if cached"),
+):
+    scope = _brand_scope(brand_id)
+    if not refresh:
+        cached = _forecast_cached(scope, horizon, interval_width)
+        if cached:
+            return cached
+    with _forecast_lock:
+        in_flight = _forecast_state.get(scope, {}).get("stage") == "fitting"
+    if not in_flight:
+        threading.Thread(
+            target=_do_brand_forecast,
+            args=(brand_id, horizon, interval_width),
+            daemon=True,
+        ).start()
+    return {
+        "pending": True,
+        "brand_id": brand_id,
+        "message": "Brand forecast fitting in background — poll /forecast/status",
+    }
+
+
+@app.post("/api/brands/{brand_id}/forecast/refresh")
+def trigger_brand_forecast(
+    brand_id: str,
+    horizon: int = Query(6, ge=1, le=24),
+    interval_width: float = Query(0.95, gt=0, lt=1),
+):
+    scope = _brand_scope(brand_id)
+    with _forecast_lock:
+        if _forecast_state.get(scope, {}).get("stage") == "fitting":
+            return {"status": "already_running"}
+    threading.Thread(
+        target=_do_brand_forecast,
+        args=(brand_id, horizon, interval_width),
+        daemon=True,
+    ).start()
+    return {"status": "started", "brand_id": brand_id, "horizon": horizon}
+
+
+@app.get("/api/brands/{brand_id}/forecast/status")
+def get_brand_forecast_status(brand_id: str):
+    scope = _brand_scope(brand_id)
+    with _forecast_lock:
+        state = dict(_forecast_state.get(scope) or {})
+    return {
+        "brand_id": brand_id,
+        "stage": state.get("stage", "idle"),
+        "error": state.get("error"),
+        "started_at": state.get("started_at"),
+        "finished_at": state.get("finished_at"),
+    }
+
+
+# ===========================================================================
 # Bike-scoped reviews
 # ===========================================================================
 
