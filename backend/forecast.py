@@ -305,8 +305,51 @@ def detect_anomalies(series: pd.Series, z_thresh: float = 2.5) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
-# Public end-to-end driver — convenience for the API endpoint
+# Public end-to-end drivers
 # ---------------------------------------------------------------------------
+
+def build_series_payload(bike_id: str) -> dict:
+    """Cheap, no-Prophet helper: imputed monthly history + anomalies. Used by
+    the unified Sales view for its always-on layer (the forecast layer is
+    fetched lazily on top).
+
+    Each row in `history` carries an inline `anomaly` field — null for normal
+    months, otherwise `{is_anomaly: true, z_score: float}` — so the chart can
+    render anomaly markers without a second lookup.
+    """
+    raw = build_complete_index(bike_id)
+    if raw.empty:
+        return {
+            "bike_id": bike_id,
+            "history": [],
+            "anomalies": [],
+        }
+
+    imputed_series, meta = impute(raw)
+    anomalies = detect_anomalies(imputed_series)
+    by_month = {a["month"]: a for a in anomalies}
+
+    history_payload: list[dict] = []
+    for i, m in enumerate(meta):
+        v = imputed_series.iloc[i]
+        anomaly_entry = by_month.get(m["month"])
+        history_payload.append({
+            "month": m["month"],
+            "units": float(v),
+            "imputed": m["imputed"],
+            "impute_method": m["impute_method"],
+            "anomaly": (
+                {"is_anomaly": True, "z_score": anomaly_entry["z_score"]}
+                if anomaly_entry else None
+            ),
+        })
+
+    return {
+        "bike_id": bike_id,
+        "history": history_payload,
+        "anomalies": anomalies,
+    }
+
 
 def run_forecast(bike_id: str, horizon: int = 6, interval_width: float = 0.95) -> dict:
     """Build the imputed series, fit Prophet, return the full payload."""

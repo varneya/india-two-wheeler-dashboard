@@ -707,6 +707,14 @@ def get_bike_anomalies(bike_id: str):
     }
 
 
+@app.get("/api/bikes/{bike_id}/sales/series")
+def get_bike_sales_series(bike_id: str):
+    """Cheap, no-Prophet enriched history: imputed monthly series with
+    inline anomaly flags. Used by the unified Sales view as its always-on
+    layer; the forecast endpoint sits on top of it lazily."""
+    return forecast_mod.build_series_payload(bike_id)
+
+
 # ===========================================================================
 # Bike-scoped reviews
 # ===========================================================================

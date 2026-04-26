@@ -33,7 +33,13 @@ hosted-frontend + local-backend deployment topology) see
 ## Features
 
 - **Per-bike sales view** — monthly chart, peak / latest / total cards,
-  staleness warnings, MoM deltas
+  staleness warnings, MoM deltas. Imputed months are visibly marked
+  (lighter dashed bars) and historical anomalies surface as amber dots.
+- **Predictive layer** — same chart toggles in a Prophet forecast (3–24
+  months out) with a 95% confidence band, plus a "Next month" tile in
+  the metrics row. Imputation fills gaps using priority `seasonal_naive
+  → linear → ffill → median` so a few missed scrape months don't break
+  the forecast.
 - **Cross-source comparison** — RushLane (manufacturer-reported) vs FADA
   (dealer registrations from Vahan) for each brand
 - **Compare tab** — overlay 2–4 bikes' monthly sales on one chart

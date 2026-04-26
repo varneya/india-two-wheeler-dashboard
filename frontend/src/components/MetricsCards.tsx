@@ -1,4 +1,5 @@
-import { AlertTriangle } from 'lucide-react'
+import { AlertTriangle, TrendingUp } from 'lucide-react'
+import type { ForecastResult } from '../api/salesApi'
 import type { Metrics, SalesDataPoint } from '../types/sales'
 import { formatMonth } from '../utils/format'
 import { Card, CardContent } from './ui/card'
@@ -7,6 +8,9 @@ interface Props {
   metrics: Metrics | null
   sales: SalesDataPoint[]
   launchMonth?: string | null
+  // Optional Prophet payload — when present, renders a 4th "Next month
+  // forecast" tile alongside the existing three.
+  forecast?: ForecastResult | null
 }
 
 function MetricCard({
@@ -72,11 +76,15 @@ function stalenessLabel(latestMonth: string): string | undefined {
   return `${gap} months behind`
 }
 
-export function MetricsCards({ metrics, sales, launchMonth }: Props) {
+export function MetricsCards({ metrics, sales, launchMonth, forecast }: Props) {
+  // 4-tile grid when a forecast is present, 3 otherwise.
+  const nextForecast = forecast?.forecast?.[0] ?? null
+  const cols = nextForecast ? 'sm:grid-cols-2 lg:grid-cols-4' : 'sm:grid-cols-3'
+
   if (!metrics) {
     return (
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-        {[0, 1, 2].map(i => (
+      <div className={`grid grid-cols-1 ${cols} gap-4`}>
+        {Array.from({ length: nextForecast ? 4 : 3 }, (_, i) => (
           <Card key={i} className="h-24 animate-pulse" />
         ))}
       </div>
@@ -97,8 +105,22 @@ export function MetricsCards({ metrics, sales, launchMonth }: Props) {
 
   const stale = metrics.latest_month ? stalenessLabel(metrics.latest_month.month) : undefined
 
+  // Forecast-tile sub copy: month label + delta vs. last observed month.
+  let nextForecastSub: string | undefined
+  if (nextForecast) {
+    const parts: string[] = [formatMonth(nextForecast.month)]
+    if (metrics.latest_month) {
+      const d = nextForecast.yhat - metrics.latest_month.units_sold
+      const sign = d >= 0 ? '+' : ''
+      parts.push(`${sign}${Math.round(d).toLocaleString()} vs latest`)
+    }
+    parts.push(`${Math.round(forecast!.interval_width * 100)}% CI ` +
+      `${Math.round(nextForecast.yhat_lower).toLocaleString()}–${Math.round(nextForecast.yhat_upper).toLocaleString()}`)
+    nextForecastSub = parts.join(' · ')
+  }
+
   return (
-    <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+    <div className={`grid grid-cols-1 ${cols} gap-4`}>
       <MetricCard
         label="Latest Month"
         value={metrics.latest_month ? metrics.latest_month.units_sold.toLocaleString() : '—'}
@@ -117,6 +139,22 @@ export function MetricsCards({ metrics, sales, launchMonth }: Props) {
           launchMonth ? ` · since ${formatMonth(launchMonth)}` : ''
         }`}
       />
+      {nextForecast && (
+        <Card className="py-5 gap-1 border-violet-500/30 bg-violet-500/5">
+          <CardContent className="flex flex-col gap-1">
+            <p className="text-violet-300/80 text-xs font-medium uppercase tracking-wider flex items-center gap-1.5">
+              <TrendingUp className="size-3" />
+              Next Month Forecast
+            </p>
+            <p className="text-3xl font-bold text-foreground">
+              {Math.round(nextForecast.yhat).toLocaleString()}
+            </p>
+            {nextForecastSub && (
+              <p className="text-muted-foreground text-sm">{nextForecastSub}</p>
+            )}
+          </CardContent>
+        </Card>
+      )}
     </div>
   )
 }

@@ -34,3 +34,28 @@ export interface RefreshStatus {
   urls_success: number;
   error_msg: string | null;
 }
+
+// Returned by GET /api/bikes/{id}/sales/series — the canonical monthly time
+// series with NaN gaps imputed and inline anomaly flags. One row per month
+// from launch_month → most recent observed month.
+export interface SeriesHistoryPoint {
+  month: string;            // 'YYYY-MM'
+  units: number;            // observed or imputed value
+  imputed: boolean;
+  impute_method: 'seasonal_naive' | 'linear' | 'ffill' | 'median' | null;
+  anomaly: { is_anomaly: true; z_score: number } | null;
+}
+
+export interface SeriesAnomaly {
+  month: string;
+  units: number;
+  prev_units: number;
+  z_score: number;
+  reason: string;
+}
+
+export interface SalesSeriesResponse {
+  bike_id: string;
+  history: SeriesHistoryPoint[];
+  anomalies: SeriesAnomaly[];
+}

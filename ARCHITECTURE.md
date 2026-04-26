@@ -105,13 +105,16 @@ flowchart TB
         end
         subgraph Components["Components"]
             BP[BikePicker /<br/>BikeCommandPalette ⌘K]
-            SC[SalesChart<br/>Recharts]
+            SC[SalesChart<br/>unified: history +<br/>imputed bars +<br/>forecast line + CI band]
+            SCTRL[SalesChartControls<br/>toggle · horizon · Re-fit]
+            AL[AnomaliesList]
+            IML[ImputedMonthsList]
             RC[ReviewCard]
             CT[CompareTab]
             TT[ThemesTab]
             RT[RefreshTab]
             ST[SetupTab<br/>status pills +<br/>install commands]
-            MC[MetricsCards /<br/>SalesTable]
+            MC[MetricsCards<br/>+ Next-month tile<br/>when forecast loaded]
             SCC[SourceComparisonCard<br/>wholesale vs retail]
         end
         subgraph Data["Data layer"]
@@ -125,7 +128,7 @@ flowchart TB
 
     subgraph Backend["FastAPI — :8000 (backend/main.py)"]
         E_BR["/api/brands<br/>/api/brands/{id}/models<br/>/api/brands/{id}/wholesale-vs-retail"]
-        E_BK["/api/bikes · /api/bikes/{id}<br/>/api/bikes/{id}/sales<br/>/api/bikes/{id}/metrics<br/>/compare?ids=..."]
+        E_BK["/api/bikes · /api/bikes/{id}<br/>/api/bikes/{id}/sales<br/>/api/bikes/{id}/sales/series<br/>/api/bikes/{id}/metrics<br/>/api/bikes/{id}/forecast (lazy)<br/>/api/bikes/{id}/forecast/refresh<br/>/api/bikes/{id}/forecast/status<br/>/api/bikes/{id}/anomalies<br/>/compare?ids=..."]
         E_RV["/api/bikes/{id}/reviews<br/>/api/bikes/{id}/reviews/summary"]
         E_REF["/api/refresh-all<br/>/api/refresh-all/status"]
         E_SYS["/api/health<br/>/api/hardware"]
@@ -136,7 +139,7 @@ flowchart TB
     DB[(SQLite<br/>sales.db)]
 
     APP --> T_SALES & T_INS & T_CMP & T_REF & T_SET
-    T_SALES --> BP & SC & MC & SCC
+    T_SALES --> BP & MC & SCTRL & SC & AL & IML & SCC
     T_INS --> TT & RC
     T_CMP --> CT
     T_REF --> RT

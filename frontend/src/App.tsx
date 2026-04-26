@@ -9,16 +9,24 @@ import { CompareTab } from './components/CompareTab'
 import { InsightsTab } from './components/InsightsTab'
 import { MetricsCards } from './components/MetricsCards'
 import { RefreshButton } from './components/RefreshButton'
-import { ForecastTab } from './components/ForecastTab'
+import { AnomaliesList } from './components/AnomaliesList'
+import { ImputedMonthsList } from './components/ImputedMonthsList'
 import { RefreshTab } from './components/RefreshTab'
 import { SalesChart } from './components/SalesChart'
+import { SalesChartControls } from './components/SalesChartControls'
 import { SalesTable } from './components/SalesTable'
 import { SetupTab } from './components/SetupTab'
 import { StatusBanner } from './components/StatusBanner'
 import { SourceComparisonCard } from './components/SourceComparisonCard'
 import { Badge } from './components/ui/badge'
-import { Card } from './components/ui/card'
+import { Card, CardContent } from './components/ui/card'
 import { Button } from './components/ui/button'
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from './components/ui/collapsible'
+import { ChevronRight } from 'lucide-react'
 import { Toaster } from './components/ui/sonner'
 import { Tabs, TabsList, TabsTrigger } from './components/ui/tabs'
 import { SelectedBikeProvider, useSelectedBike } from './context/SelectedBike'
@@ -41,18 +49,17 @@ function brandIdFromBikeId(bikeId: string): string | null {
 
 const queryClient = new QueryClient()
 
-type Tab = 'sales' | 'insights' | 'compare' | 'forecast' | 'refresh' | 'setup'
+type Tab = 'sales' | 'insights' | 'compare' | 'refresh' | 'setup'
 
 const TAB_LABELS: Record<Tab, string> = {
   sales: 'Sales Data',
   insights: 'Owner Insights',
   compare: 'Compare',
-  forecast: 'Forecast',
   refresh: 'Data Refresh',
   setup: 'Setup',
 }
 
-const TAB_ORDER: Tab[] = ['sales', 'insights', 'compare', 'forecast', 'refresh', 'setup']
+const TAB_ORDER: Tab[] = ['sales', 'insights', 'compare', 'refresh', 'setup']
 
 function ThemeToggle() {
   const { theme, toggle } = useTheme()
@@ -72,7 +79,22 @@ function ThemeToggle() {
 function Dashboard() {
   const [tab, setTab] = useState<Tab>('sales')
   const { selectedBikeId } = useSelectedBike()
-  const { sales, metrics, isLoading, isError } = useSalesData(selectedBikeId)
+  const {
+    sales,
+    metrics,
+    series,
+    forecast,
+    observedCount,
+    showForecast,
+    setShowForecast,
+    horizon,
+    setHorizon,
+    refit,
+    forecastFitting,
+    canForecast,
+    isLoading,
+    isError,
+  } = useSalesData(selectedBikeId)
 
   // On first load, probe the backend. If unreachable, jump to the Setup tab so
   // visitors landing on the hosted page see install instructions instead of a
@@ -161,7 +183,10 @@ function Dashboard() {
           </Card>
         )}
 
-        {/* Sales tab */}
+        {/* Sales tab — combined view: metrics + unified chart (with optional
+            Prophet forecast layer + imputation marks + anomaly dots) +
+            anomalies / imputed-month detail strip + cross-source comparison +
+            collapsible raw historical table. */}
         {tab === 'sales' && (
           <>
             {isLoading ? (
@@ -185,10 +210,51 @@ function Dashboard() {
                   metrics={metrics}
                   sales={sales}
                   launchMonth={selectedBike?.launch_month}
+                  forecast={forecast}
                 />
-                <SalesChart sales={sales} displayName={selectedBike?.display_name} />
+                <Card>
+                  <CardContent>
+                    <SalesChartControls
+                      series={series}
+                      forecast={forecast}
+                      showForecast={showForecast}
+                      setShowForecast={setShowForecast}
+                      horizon={horizon}
+                      setHorizon={setHorizon}
+                      forecastFitting={forecastFitting}
+                      canForecast={canForecast}
+                      observedCount={observedCount}
+                      refit={refit}
+                    />
+                    <SalesChart
+                      series={series}
+                      forecast={forecast}
+                      displayName={selectedBike?.display_name}
+                    />
+                  </CardContent>
+                </Card>
+                {/* Anomalies + imputation detail strip — each card hides
+                    itself when there's nothing to show, so the row collapses
+                    gracefully if only one (or neither) has content. */}
+                {series && (series.anomalies.length > 0 ||
+                  series.history.some(h => h.imputed)) && (
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <AnomaliesList items={series.anomalies} />
+                    <ImputedMonthsList history={series.history} />
+                  </div>
+                )}
                 <SourceComparisonCard brandId={brandIdFromBikeId(selectedBikeId)} />
-                <SalesTable sales={sales} />
+                <Collapsible>
+                  <CollapsibleTrigger asChild>
+                    <Button variant="outline" size="sm" className="self-start">
+                      <ChevronRight className="size-3 transition-transform data-[state=open]:rotate-90" />
+                      Historical data table ({sales.length} rows)
+                    </Button>
+                  </CollapsibleTrigger>
+                  <CollapsibleContent className="mt-3">
+                    <SalesTable sales={sales} />
+                  </CollapsibleContent>
+                </Collapsible>
                 <StatusBanner metrics={metrics} />
               </>
             )}
@@ -210,9 +276,6 @@ function Dashboard() {
 
         {/* Compare tab */}
         {tab === 'compare' && <CompareTab />}
-
-        {/* Forecast tab */}
-        {tab === 'forecast' && <ForecastTab />}
 
         {/* Data Refresh tab */}
         {tab === 'refresh' && <RefreshTab />}

@@ -1,11 +1,22 @@
 import axios from 'axios'
-import type { Metrics, RefreshStatus, SalesDataPoint } from '../types/sales'
+import type {
+  Metrics,
+  RefreshStatus,
+  SalesDataPoint,
+  SalesSeriesResponse,
+} from '../types/sales'
 import { API_BASE } from './client'
 
 const api = axios.create({ baseURL: API_BASE })
 
 export const fetchSales = (bikeId: string): Promise<SalesDataPoint[]> =>
   api.get<SalesDataPoint[]>(`/bikes/${bikeId}/sales`).then(r => r.data)
+
+// Cheap, no-Prophet enriched history (imputed monthly series + inline anomaly
+// flags). The unified Sales view always loads this on bike selection; the
+// /forecast endpoint sits on top of it lazily.
+export const fetchSalesSeries = (bikeId: string): Promise<SalesSeriesResponse> =>
+  api.get<SalesSeriesResponse>(`/bikes/${bikeId}/sales/series`).then(r => r.data)
 
 export const fetchMetrics = (bikeId: string): Promise<Metrics> =>
   api.get<Metrics>(`/bikes/${bikeId}/metrics`).then(r => r.data)
