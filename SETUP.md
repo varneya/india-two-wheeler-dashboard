@@ -110,9 +110,11 @@ pip install \
   python-dotenv \
   pdfplumber \
   numpy \
+  pandas \
   scikit-learn \
   hdbscan \
-  umap-learn
+  umap-learn \
+  prophet
 ```
 
 **Package roles:**
@@ -126,12 +128,16 @@ pip install \
 | `anthropic` | `themes_llm.py` | Claude API client |
 | `python-dotenv` | `main.py` | Load `.env` |
 | `pdfplumber` | `fada_scraper.py` | Parse FADA monthly PDFs |
-| `numpy` | embeddings, clustering | Numerical arrays |
+| `numpy` | embeddings, clustering, forecast | Numerical arrays |
+| `pandas` | `forecast.py` | Period-indexed monthly series |
 | `scikit-learn` | `themes_tfidf.py`, fallback in semantic | TF-IDF, KMeans, silhouette |
 | `hdbscan` | `themes_semantic.py`, `themes_bertopic.py` | Density-based clustering |
 | `umap-learn` | `themes_bertopic.py` | Dimensionality reduction |
+| `prophet` | `forecast.py` | Sales forecasting (yearly seasonality) |
 
 > **Heads-up:** `hdbscan` and `umap-learn` compile native code on install. On macOS you may need Xcode CLI tools (`xcode-select --install`); on Ubuntu, `sudo apt install build-essential python3-dev`. On Windows, install the Microsoft C++ Build Tools.
+
+> **Prophet footprint:** `prophet` pulls in `cmdstanpy` + `matplotlib` and adds ~200 MB to the venv. The first `import prophet` in a fresh install can take 30–60s while it bootstraps the STAN backend; subsequent imports are fast. If install fails on macOS, see <https://facebook.github.io/prophet/docs/installation.html>.
 
 ---
 

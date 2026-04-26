@@ -9,6 +9,7 @@ import { CompareTab } from './components/CompareTab'
 import { InsightsTab } from './components/InsightsTab'
 import { MetricsCards } from './components/MetricsCards'
 import { RefreshButton } from './components/RefreshButton'
+import { ForecastTab } from './components/ForecastTab'
 import { RefreshTab } from './components/RefreshTab'
 import { SalesChart } from './components/SalesChart'
 import { SalesTable } from './components/SalesTable'
@@ -40,17 +41,18 @@ function brandIdFromBikeId(bikeId: string): string | null {
 
 const queryClient = new QueryClient()
 
-type Tab = 'sales' | 'insights' | 'compare' | 'refresh' | 'setup'
+type Tab = 'sales' | 'insights' | 'compare' | 'forecast' | 'refresh' | 'setup'
 
 const TAB_LABELS: Record<Tab, string> = {
   sales: 'Sales Data',
   insights: 'Owner Insights',
   compare: 'Compare',
+  forecast: 'Forecast',
   refresh: 'Data Refresh',
   setup: 'Setup',
 }
 
-const TAB_ORDER: Tab[] = ['sales', 'insights', 'compare', 'refresh', 'setup']
+const TAB_ORDER: Tab[] = ['sales', 'insights', 'compare', 'forecast', 'refresh', 'setup']
 
 function ThemeToggle() {
   const { theme, toggle } = useTheme()
@@ -208,6 +210,9 @@ function Dashboard() {
 
         {/* Compare tab */}
         {tab === 'compare' && <CompareTab />}
+
+        {/* Forecast tab */}
+        {tab === 'forecast' && <ForecastTab />}
 
         {/* Data Refresh tab */}
         {tab === 'refresh' && <RefreshTab />}

@@ -17,6 +17,7 @@ from reviews_scraper import scrape_reviews_for_bike
 from bikedekho_scraper import scrape_bikedekho_for_bike
 from zigwheels_scraper import scrape_zigwheels_for_bike
 from reddit_scraper import scrape_reddit_for_bike
+import forecast as forecast_mod
 import hardware_detector
 import themes_runner
 import themes_keyword
@@ -568,6 +569,142 @@ def trigger_bike_refresh(bike_id: str, background_tasks: BackgroundTasks):
 def refresh_status():
     log = database.get_last_scrape_log()
     return log or {"run_at": None, "urls_tried": 0, "urls_success": 0, "error_msg": None}
+
+
+# ===========================================================================
+# Bike-scoped forecast (Prophet) + missing-value imputation + anomalies
+# ===========================================================================
+
+# Module-global in-memory cache keyed by (bike_id, horizon, interval_width).
+# 24h TTL — Prophet fit is 5-30s per bike on this data so re-fitting on
+# every page load would be wasteful. Loss on backend restart is fine.
+_FORECAST_CACHE_TTL_SECONDS = 24 * 60 * 60
+_forecast_cache: dict[tuple, dict] = {}
+_forecast_cache_meta: dict[tuple, float] = {}    # cache_key -> stored_at (epoch s)
+_forecast_state: dict[str, dict] = {}            # bike_id -> {stage, error, started_at}
+_forecast_lock = threading.Lock()
+
+
+def _forecast_cache_key(bike_id: str, horizon: int, interval_width: float) -> tuple:
+    return (bike_id, horizon, round(interval_width, 3))
+
+
+def _forecast_cached(bike_id: str, horizon: int, interval_width: float) -> dict | None:
+    key = _forecast_cache_key(bike_id, horizon, interval_width)
+    stored = _forecast_cache_meta.get(key)
+    if stored is None:
+        return None
+    if time.time() - stored > _FORECAST_CACHE_TTL_SECONDS:
+        _forecast_cache.pop(key, None)
+        _forecast_cache_meta.pop(key, None)
+        return None
+    return _forecast_cache.get(key)
+
+
+def _do_forecast(bike_id: str, horizon: int, interval_width: float):
+    with _forecast_lock:
+        _forecast_state[bike_id] = {
+            "stage": "fitting",
+            "started_at": time.time(),
+            "error": None,
+        }
+    try:
+        result = forecast_mod.run_forecast(
+            bike_id, horizon=horizon, interval_width=interval_width
+        )
+        key = _forecast_cache_key(bike_id, horizon, interval_width)
+        _forecast_cache[key] = result
+        _forecast_cache_meta[key] = time.time()
+        with _forecast_lock:
+            _forecast_state[bike_id] = {
+                "stage": "done",
+                "started_at": _forecast_state[bike_id]["started_at"],
+                "finished_at": time.time(),
+                "error": None,
+            }
+    except Exception as e:
+        print(f"[forecast] {bike_id} failed: {e}")
+        with _forecast_lock:
+            _forecast_state[bike_id] = {
+                "stage": "error",
+                "started_at": _forecast_state.get(bike_id, {}).get("started_at"),
+                "finished_at": time.time(),
+                "error": str(e),
+            }
+
+
+@app.get("/api/bikes/{bike_id}/forecast")
+def get_bike_forecast(
+    bike_id: str,
+    horizon: int = Query(6, ge=1, le=24),
+    interval_width: float = Query(0.95, gt=0, lt=1),
+    refresh: bool = Query(False, description="Force re-fit even if cached"),
+):
+    """Returns the cached forecast if fresh; otherwise kicks off a background
+    fit and returns 202 with `pending: true`. Poll `/forecast/status` to know
+    when it's done."""
+    if not refresh:
+        cached = _forecast_cached(bike_id, horizon, interval_width)
+        if cached:
+            return cached
+    # Kick off background fit unless one's already in flight for this bike
+    with _forecast_lock:
+        in_flight = _forecast_state.get(bike_id, {}).get("stage") == "fitting"
+    if not in_flight:
+        threading.Thread(
+            target=_do_forecast,
+            args=(bike_id, horizon, interval_width),
+            daemon=True,
+        ).start()
+    return {
+        "pending": True,
+        "bike_id": bike_id,
+        "message": "Forecast fitting in background — poll /forecast/status",
+    }
+
+
+@app.post("/api/bikes/{bike_id}/forecast/refresh")
+def trigger_bike_forecast(
+    bike_id: str,
+    horizon: int = Query(6, ge=1, le=24),
+    interval_width: float = Query(0.95, gt=0, lt=1),
+):
+    with _forecast_lock:
+        if _forecast_state.get(bike_id, {}).get("stage") == "fitting":
+            return {"status": "already_running"}
+    threading.Thread(
+        target=_do_forecast,
+        args=(bike_id, horizon, interval_width),
+        daemon=True,
+    ).start()
+    return {"status": "started", "bike_id": bike_id, "horizon": horizon}
+
+
+@app.get("/api/bikes/{bike_id}/forecast/status")
+def get_bike_forecast_status(bike_id: str):
+    with _forecast_lock:
+        state = dict(_forecast_state.get(bike_id) or {})
+    return {
+        "bike_id": bike_id,
+        "stage": state.get("stage", "idle"),
+        "error": state.get("error"),
+        "started_at": state.get("started_at"),
+        "finished_at": state.get("finished_at"),
+    }
+
+
+@app.get("/api/bikes/{bike_id}/anomalies")
+def get_bike_anomalies(bike_id: str):
+    """Standalone anomaly endpoint — runs imputation + anomaly detection
+    only (no Prophet fit), so it's cheap to call from any tab."""
+    series = forecast_mod.build_complete_index(bike_id)
+    if series.empty:
+        return {"bike_id": bike_id, "anomalies": []}
+    imputed, _meta = forecast_mod.impute(series)
+    return {
+        "bike_id": bike_id,
+        "anomalies": forecast_mod.detect_anomalies(imputed),
+    }
 
 
 # ===========================================================================
