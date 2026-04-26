@@ -23,6 +23,88 @@ function hasModel(required: string, pulled: string[]): boolean {
   return false
 }
 
+type Platform = 'mac' | 'windows' | 'linux'
+
+function detectPlatform(): Platform {
+  if (typeof navigator === 'undefined') return 'mac'
+  const ua = navigator.userAgent.toLowerCase()
+  if (ua.includes('win')) return 'windows'
+  if (ua.includes('mac')) return 'mac'
+  if (ua.includes('linux')) return 'linux'
+  return 'mac'
+}
+
+interface PlatformCommands {
+  prereqs: string
+  backend: string
+  ollama: string
+  models: string
+  notes?: string
+}
+
+const INSTALL_COMMANDS: Record<Platform, PlatformCommands> = {
+  mac: {
+    prereqs: `# One-time: install Python 3.10+, Node 20+, Git
+brew install python@3.12 node git`,
+    backend: `git clone https://github.com/varneya/india-two-wheeler-dashboard.git
+cd india-two-wheeler-dashboard/backend
+python3 -m venv venv && source venv/bin/activate
+pip install -r requirements.txt
+uvicorn main:app --port 8000`,
+    ollama: `# Install
+brew install ollama
+
+# Start with this origin allowlisted (so the hosted page can reach it)
+OLLAMA_ORIGINS="https://varneya.github.io" ollama serve`,
+    models: `ollama pull nomic-embed-text
+ollama pull mistral:7b      # or llama3.2:3b for 8 GB RAM, phi3:mini for 4 GB`,
+    notes: `Tip: to keep OLLAMA_ORIGINS set across reboots, run
+launchctl setenv OLLAMA_ORIGINS "https://varneya.github.io"
+once and restart the Ollama.app from /Applications.`,
+  },
+  windows: {
+    prereqs: `# One-time, in PowerShell as Admin: install Python 3.10+, Node 20+, Git
+winget install Python.Python.3.12 OpenJS.NodeJS Git.Git`,
+    backend: `git clone https://github.com/varneya/india-two-wheeler-dashboard.git
+cd india-two-wheeler-dashboard\\backend
+python -m venv venv
+venv\\Scripts\\activate
+pip install -r requirements.txt
+uvicorn main:app --port 8000`,
+    ollama: `# 1. Download the installer from https://ollama.com/download/windows
+#    and run OllamaSetup.exe.
+# 2. Quit any running Ollama from the system tray.
+# 3. In PowerShell, set the env var and restart:
+$env:OLLAMA_ORIGINS = "https://varneya.github.io"
+ollama serve`,
+    models: `ollama pull nomic-embed-text
+ollama pull mistral:7b      # or llama3.2:3b for 8 GB RAM, phi3:mini for 4 GB`,
+    notes: `Tip: to make OLLAMA_ORIGINS persist, set it as a User
+environment variable via System Properties → Environment Variables,
+then restart Ollama.`,
+  },
+  linux: {
+    prereqs: `# One-time (Debian/Ubuntu): install Python 3.10+, Node 20+, Git
+sudo apt update
+sudo apt install -y python3 python3-venv python3-pip nodejs npm git`,
+    backend: `git clone https://github.com/varneya/india-two-wheeler-dashboard.git
+cd india-two-wheeler-dashboard/backend
+python3 -m venv venv && source venv/bin/activate
+pip install -r requirements.txt
+uvicorn main:app --port 8000`,
+    ollama: `# Install
+curl -fsSL https://ollama.com/install.sh | sh
+
+# Start with this origin allowlisted
+OLLAMA_ORIGINS="https://varneya.github.io" ollama serve`,
+    models: `ollama pull nomic-embed-text
+ollama pull mistral:7b      # or llama3.2:3b for 8 GB RAM, phi3:mini for 4 GB`,
+    notes: `Tip: if running Ollama as a systemd service,
+sudo systemctl edit ollama.service
+and add Environment="OLLAMA_ORIGINS=https://varneya.github.io" under [Service].`,
+  },
+}
+
 async function probeBackend(): Promise<Probe> {
   try {
     const res = await fetch(`${API_BASE}/health`, { cache: 'no-store' })
@@ -91,6 +173,8 @@ export function SetupTab() {
     ollama.state !== 'ok' ? 'unknown' : missingModels.length === 0 ? 'ok' : 'down'
 
   const allGreen = backend === 'ok' && ollama.state === 'ok' && modelsState === 'ok'
+  const [platform, setPlatform] = useState<Platform>(detectPlatform)
+  const cmds = INSTALL_COMMANDS[platform]
 
   return (
     <div className="flex flex-col gap-6">
@@ -151,78 +235,93 @@ export function SetupTab() {
         )}
       </Card>
 
-      {/* Install instructions */}
-      {!allGreen && (
-        <Card className="p-6 flex flex-col gap-6">
+      {/* Install instructions — always shown so users can come back later. */}
+      <Card className="p-6 flex flex-col gap-6">
+        <div className="flex items-start justify-between gap-4 flex-wrap">
           <div>
-            <h2 className="text-lg font-semibold mb-1">Set up your local environment</h2>
-            <p className="text-sm text-muted-foreground">
+            <h2 className="text-lg font-semibold mb-1">
+              {allGreen ? 'How this works (for reference)' : 'Set up your local environment'}
+            </h2>
+            <p className="text-sm text-muted-foreground max-w-prose">
               The dashboard runs in your browser, but the data scrapers and ML models run on your
               machine — nothing is sent to a third-party server (except optional Anthropic API
               calls, if you use them).
             </p>
           </div>
 
-          {/* Step 1: backend */}
-          <section className="flex flex-col gap-2">
-            <h3 className="font-medium">1. Run the backend locally</h3>
-            <p className="text-sm text-muted-foreground">
-              Clone the repo and start FastAPI. Python 3.10+ required.
-            </p>
-            <CodeBlock>{`git clone https://github.com/varneya/india-two-wheeler-dashboard.git
-cd india-two-wheeler-dashboard/backend
-python3 -m venv venv && source venv/bin/activate
-pip install -r requirements.txt
-uvicorn main:app --port 8000`}</CodeBlock>
-            <p className="text-xs text-muted-foreground">
-              Windows: replace <code>source venv/bin/activate</code> with{' '}
-              <code>venv\Scripts\activate</code>.
-            </p>
-          </section>
-
-          {/* Step 2: ollama */}
-          <section className="flex flex-col gap-2">
-            <h3 className="font-medium">2. Install &amp; start Ollama</h3>
-            <p className="text-sm text-muted-foreground">
-              The <code>OLLAMA_ORIGINS</code> env var lets your browser at{' '}
-              <code>varneya.github.io</code> talk to Ollama on <code>localhost</code>.
-            </p>
-            <CodeBlock>{`# macOS
-brew install ollama
-
-# Linux
-curl -fsSL https://ollama.com/install.sh | sh
-
-# Windows: download installer from https://ollama.com/download
-
-# Start the server with this origin allowlisted
-OLLAMA_ORIGINS="https://varneya.github.io" ollama serve`}</CodeBlock>
-          </section>
-
-          {/* Step 3: models */}
-          <section className="flex flex-col gap-2">
-            <h3 className="font-medium">3. Pull the models</h3>
-            <p className="text-sm text-muted-foreground">
-              <code>nomic-embed-text</code> for embeddings, <code>mistral:7b</code> for LLM theming
-              and BERTopic auto-naming. Pick a smaller chat model if you have ≤8 GB RAM.
-            </p>
-            <CodeBlock>{`ollama pull nomic-embed-text
-ollama pull mistral:7b      # or llama3.2:3b for 8 GB RAM, phi3:mini for 4 GB`}</CodeBlock>
-          </section>
-
-          <div className="text-sm">
-            Full guide:{' '}
-            <a
-              href="https://github.com/varneya/india-two-wheeler-dashboard/blob/main/SETUP.md"
-              target="_blank"
-              rel="noreferrer"
-              className="text-primary hover:underline inline-flex items-center gap-1"
-            >
-              SETUP.md on GitHub <ExternalLink className="size-3" />
-            </a>
+          {/* Platform selector */}
+          <div className="inline-flex rounded-md bg-muted/40 p-1 text-xs font-medium">
+            {(['mac', 'windows', 'linux'] as Platform[]).map(p => (
+              <button
+                key={p}
+                type="button"
+                onClick={() => setPlatform(p)}
+                className={`px-3 py-1 rounded ${
+                  platform === p
+                    ? 'bg-primary text-primary-foreground'
+                    : 'text-muted-foreground hover:text-foreground'
+                }`}
+              >
+                {p === 'mac' ? 'macOS' : p === 'windows' ? 'Windows' : 'Linux'}
+              </button>
+            ))}
           </div>
-        </Card>
-      )}
+        </div>
+
+        {/* Step 0: prerequisites */}
+        <section className="flex flex-col gap-2">
+          <h3 className="font-medium">Prerequisites</h3>
+          <p className="text-sm text-muted-foreground">
+            Python 3.10+, Node.js 20+, and Git. Skip if you already have them.
+          </p>
+          <CodeBlock>{cmds.prereqs}</CodeBlock>
+        </section>
+
+        {/* Step 1: backend */}
+        <section className="flex flex-col gap-2">
+          <h3 className="font-medium">1. Run the backend locally</h3>
+          <p className="text-sm text-muted-foreground">
+            Clone the repo and start FastAPI on port 8000. First-time install pulls in pandas +
+            scikit-learn + hdbscan + Prophet, which can take a few minutes.
+          </p>
+          <CodeBlock>{cmds.backend}</CodeBlock>
+        </section>
+
+        {/* Step 2: ollama */}
+        <section className="flex flex-col gap-2">
+          <h3 className="font-medium">2. Install &amp; start Ollama</h3>
+          <p className="text-sm text-muted-foreground">
+            <code>OLLAMA_ORIGINS</code> lets the browser at <code>varneya.github.io</code> talk
+            to Ollama on <code>localhost</code> — without it, requests get blocked by CORS.
+          </p>
+          <CodeBlock>{cmds.ollama}</CodeBlock>
+          {cmds.notes && (
+            <p className="text-xs text-muted-foreground whitespace-pre-line">{cmds.notes}</p>
+          )}
+        </section>
+
+        {/* Step 3: models */}
+        <section className="flex flex-col gap-2">
+          <h3 className="font-medium">3. Pull the models</h3>
+          <p className="text-sm text-muted-foreground">
+            <code>nomic-embed-text</code> (~274 MB) is the embedding model.{' '}
+            <code>mistral:7b</code> (~4.4 GB) handles BERTopic naming and the LLM-themes method.
+          </p>
+          <CodeBlock>{cmds.models}</CodeBlock>
+        </section>
+
+        <div className="text-sm">
+          Full guide with troubleshooting:{' '}
+          <a
+            href="https://github.com/varneya/india-two-wheeler-dashboard/blob/main/SETUP.md"
+            target="_blank"
+            rel="noreferrer"
+            className="text-primary hover:underline inline-flex items-center gap-1"
+          >
+            SETUP.md on GitHub <ExternalLink className="size-3" />
+          </a>
+        </div>
+      </Card>
     </div>
   )
 }
