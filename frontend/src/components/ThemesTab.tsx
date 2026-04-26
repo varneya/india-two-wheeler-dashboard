@@ -8,6 +8,7 @@ import {
   pullOllamaModel,
   triggerThemesAnalysis,
   type KeywordMap,
+  type PoolScope,
   type PullProgress,
 } from '../api/themesApi'
 import { useSelectedBike } from '../context/SelectedBike'
@@ -512,6 +513,15 @@ function ThemeCard({ theme, rank }: { theme: Theme; rank: number }) {
           <p className="font-semibold text-foreground text-sm leading-tight">{theme.name}</p>
         </div>
         <div className="flex items-center gap-2 shrink-0">
+          {typeof theme.localized_share === 'number' && (
+            <Badge
+              variant={theme.localized_share >= 0.4 ? 'success' : theme.localized_share >= 0.15 ? 'info' : 'secondary'}
+              className="rounded-full"
+              title="Fraction of this theme's reviews from the selected bike"
+            >
+              {Math.round(theme.localized_share * 100)}% this bike
+            </Badge>
+          )}
           <SentimentBadge s={theme.sentiment} />
           <span className="text-xs text-muted-foreground">{theme.mention_count} mentions</span>
         </div>
@@ -560,6 +570,7 @@ function ThemeCard({ theme, rank }: { theme: Theme; rank: number }) {
 export function ThemesTab() {
   const { selectedBikeId } = useSelectedBike()
   const [method, setMethod] = useState<Method>('keyword')
+  const [poolScope, setPoolScope] = useState<PoolScope>('bike')
   const [nClusters, setNClusters] = useState(6)
   const [llmBackend, setLlmBackend] = useState('claude')
   const [llmNaming, setLlmNaming] = useState(true)  // BERTopic — refine names with Mistral
@@ -619,7 +630,7 @@ export function ThemesTab() {
         : {}
 
     try {
-      await triggerThemesAnalysis(selectedBikeId, method, config)
+      await triggerThemesAnalysis(selectedBikeId, method, config, poolScope)
     } catch (e) {
       setError(String(e))
       setRunning(false)
@@ -714,6 +725,43 @@ export function ThemesTab() {
         />
       </div>
 
+      {/* Pool-scope toggle: bike-only vs brand-wide */}
+      <div>
+        <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3">
+          Review Pool
+        </h2>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          {([
+            {
+              id: 'bike' as PoolScope,
+              label: 'Just this bike',
+              detail: 'Cluster only the selected bike\'s reviews. Best for popular bikes with plenty of feedback.',
+            },
+            {
+              id: 'brand' as PoolScope,
+              label: 'Brand-wide pool',
+              detail: 'Cluster all reviews of every bike from this brand. Niche bikes inherit themes from siblings; each theme shows a "share of this bike" badge.',
+            },
+          ]).map(opt => (
+            <button
+              key={opt.id}
+              type="button"
+              onClick={() => setPoolScope(opt.id)}
+              className={`text-left rounded-xl border px-4 py-3 transition-colors ${
+                poolScope === opt.id
+                  ? 'border-primary bg-primary/10'
+                  : 'border-border bg-card hover:bg-accent'
+              }`}
+            >
+              <div className="font-medium text-sm">{opt.label}</div>
+              <div className="text-xs text-muted-foreground mt-1 leading-relaxed">
+                {opt.detail}
+              </div>
+            </button>
+          ))}
+        </div>
+      </div>
+
       {/* Run button */}
       <Button
         onClick={startAnalysis}
@@ -724,7 +772,7 @@ export function ThemesTab() {
         {running ? <Loader2 className="animate-spin" /> : <Sparkles />}
         {running
           ? 'Analysing…'
-          : `Run ${METHODS.find(m => m.id === method)?.label ?? ''} Analysis`}
+          : `Run ${METHODS.find(m => m.id === method)?.label ?? ''} Analysis${poolScope === 'brand' ? ' (brand-wide)' : ''}`}
       </Button>
 
       {/* Error */}

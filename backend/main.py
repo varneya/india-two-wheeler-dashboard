@@ -631,11 +631,12 @@ _themes_running: dict[str, bool] = {}
 class ThemesRequest(BaseModel):
     method: str = "keyword"
     config: dict = {}
+    pool_scope: str = "bike"   # "bike" | "brand"
 
 
-def _do_themes_analysis(bike_id: str, method: str, config: dict):
+def _do_themes_analysis(bike_id: str, method: str, config: dict, pool_scope: str):
     try:
-        themes_runner.run_analysis(method, config, bike_id=bike_id)
+        themes_runner.run_analysis(method, config, bike_id=bike_id, pool_scope=pool_scope)
     except Exception as e:
         print(f"[themes] {bike_id} error: {e}")
     finally:
@@ -646,9 +647,18 @@ def _do_themes_analysis(bike_id: str, method: str, config: dict):
 def run_bike_themes(bike_id: str, req: ThemesRequest, background_tasks: BackgroundTasks):
     if _themes_running.get(bike_id):
         return {"status": "already_running"}
+    if req.pool_scope not in ("bike", "brand"):
+        raise HTTPException(status_code=400, detail=f"pool_scope must be 'bike' or 'brand'")
     _themes_running[bike_id] = True
-    background_tasks.add_task(_do_themes_analysis, bike_id, req.method, req.config)
-    return {"status": "started", "method": req.method, "bike_id": bike_id}
+    background_tasks.add_task(
+        _do_themes_analysis, bike_id, req.method, req.config, req.pool_scope
+    )
+    return {
+        "status": "started",
+        "method": req.method,
+        "bike_id": bike_id,
+        "pool_scope": req.pool_scope,
+    }
 
 
 @app.get("/api/bikes/{bike_id}/themes")

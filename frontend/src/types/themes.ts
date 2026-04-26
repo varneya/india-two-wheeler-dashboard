@@ -4,6 +4,11 @@ export interface Theme {
   mention_count: number
   example_quotes: string[]
   keywords: string[]
+  // Populated only when the analysis was run with pool_scope='brand':
+  // fraction of this theme's reviews attributable to the originally-selected
+  // bike (0 = entirely from siblings, 1 = uniquely about this bike).
+  localized_share?: number | null
+  bike_review_counts?: Record<string, number>
 }
 
 export interface ThemesResult {

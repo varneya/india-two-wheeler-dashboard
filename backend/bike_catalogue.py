@@ -364,3 +364,18 @@ def make_bike_id(brand_id: str, canonical: str) -> str:
     import re
     slug = re.sub(r"[^a-z0-9]+", "-", canonical.lower()).strip("-")
     return f"{brand_id}-{slug}"
+
+
+def brand_id_from_bike_id(bike_id: str) -> str | None:
+    """Extract brand_id from a bike_id string.
+
+    Bike IDs are `{brand_id}-{model-slug}` but some brand_ids contain dashes
+    themselves ('royal-enfield', 'harley-davidson'). Match longest brand-id
+    prefix first to disambiguate."""
+    if not bike_id:
+        return None
+    bike_id = bike_id.lower()
+    for bid in sorted(BRANDS.keys(), key=len, reverse=True):
+        if bike_id == bid or bike_id.startswith(bid + "-"):
+            return bid
+    return None

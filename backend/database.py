@@ -452,6 +452,40 @@ def get_all_reviews(bike_id: str | None = None) -> list[dict]:
     return [dict(r) for r in rows]
 
 
+def get_reviews_by_brand(brand: str) -> list[dict]:
+    """All reviews for every bike whose `bikes.brand` matches (case-insensitive).
+
+    Used by cross-bike pooling — clustering 500 reviews across a brand reveals
+    far sharper themes than 10 reviews from a single niche bike. The bike_id
+    on each row is preserved so callers can compute per-bike attribution
+    (e.g. `localized_share`)."""
+    with get_conn() as conn:
+        rows = conn.execute(
+            """SELECT r.id, r.bike_id, r.source, r.post_id, r.username,
+                      r.review_text, r.overall_rating, r.thread_url,
+                      r.scraped_at
+               FROM reviews r
+               JOIN bikes b ON b.id = r.bike_id
+               WHERE LOWER(b.brand) = LOWER(?)
+               ORDER BY r.bike_id, r.source, r.scraped_at DESC""",
+            (brand,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_reviews_by_scope(scope: str, scope_id: str) -> list[dict]:
+    """Dispatch helper for cross-bike pooling.
+
+    scope='bike'  -> get_all_reviews(bike_id=scope_id)
+    scope='brand' -> get_reviews_by_brand(scope_id)  (scope_id is the brand slug)
+    """
+    if scope == "bike":
+        return get_all_reviews(bike_id=scope_id)
+    if scope == "brand":
+        return get_reviews_by_brand(scope_id)
+    raise ValueError(f"unknown scope: {scope!r}")
+
+
 def get_review_summary(bike_id: str) -> dict:
     with get_conn() as conn:
         total = conn.execute(

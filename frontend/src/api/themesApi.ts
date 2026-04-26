@@ -19,15 +19,18 @@ export async function fetchThemesStatus(bikeId: string): Promise<ThemesStatus> {
   return res.json()
 }
 
+export type PoolScope = 'bike' | 'brand'
+
 export async function triggerThemesAnalysis(
   bikeId: string,
   method: string,
   config: Record<string, unknown>,
+  pool_scope: PoolScope = 'bike',
 ): Promise<{ status: string }> {
   const res = await fetch(`${BASE}/bikes/${bikeId}/themes/analyze`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ method, config }),
+    body: JSON.stringify({ method, config, pool_scope }),
   })
   if (!res.ok) throw new Error('Failed to trigger themes analysis')
   return res.json()
