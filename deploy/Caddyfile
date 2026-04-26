@@ -1,0 +1,27 @@
+# Caddy config — terminates TLS for the public domain and proxies to uvicorn
+# on localhost:8000. Caddy auto-fetches a Let's Encrypt cert via HTTP-01
+# challenge on first start (your DuckDNS A record must point at this VM and
+# port 80 must be open).
+#
+# Templated by scripts/setup_oracle_vm.sh — ${TWB_DOMAIN} is replaced before
+# the file is copied to /etc/caddy/Caddyfile.
+
+${TWB_DOMAIN} {
+    encode gzip zstd
+
+    # Slightly higher request limit for /refresh-all bursts
+    reverse_proxy localhost:8000 {
+        transport http {
+            response_header_timeout 120s
+            read_timeout            120s
+        }
+    }
+
+    log {
+        output file /var/log/caddy/access.log {
+            roll_size 50mb
+            roll_keep 5
+        }
+        format console
+    }
+}

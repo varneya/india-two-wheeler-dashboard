@@ -38,11 +38,22 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Bike Sales Miner", lifespan=lifespan)
 
+# CORS allowlist: localhost (dev) + the hosted frontend origin always; the
+# Oracle/Fly deploy script appends the production Caddy domain via the
+# `EXTRA_CORS_ORIGINS` env var (comma-separated) so we don't have to edit
+# this file when the backend gets a new public hostname.
+import os as _os  # noqa: E402, I001
+_EXTRA_CORS = [
+    o.strip() for o in (_os.environ.get("EXTRA_CORS_ORIGINS") or "").split(",")
+    if o.strip()
+]
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "http://localhost:5173",
         "https://varneya.github.io",
+        *_EXTRA_CORS,
     ],
     allow_methods=["*"],
     allow_headers=["*"],

@@ -1,0 +1,29 @@
+# systemd unit for the FastAPI backend on a Linux deploy host.
+#
+# Templated by scripts/setup_oracle_vm.sh — placeholders are replaced via
+# `envsubst` before being copied to /etc/systemd/system/.
+#
+# Manage manually with:
+#   systemctl status   twowheeler-backend
+#   systemctl restart  twowheeler-backend
+#   journalctl -u      twowheeler-backend -f
+
+[Unit]
+Description=India Two-Wheeler Dashboard backend (FastAPI/uvicorn)
+After=network-online.target ollama.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=${TWB_USER}
+Group=${TWB_USER}
+WorkingDirectory=${TWB_REPO}/backend
+Environment=EXTRA_CORS_ORIGINS=${TWB_ORIGIN_HTTPS}
+Environment=EMBEDDING_BACKEND=${TWB_EMBEDDING_BACKEND}
+EnvironmentFile=-${TWB_REPO}/backend/.env
+ExecStart=${TWB_REPO}/backend/venv/bin/uvicorn main:app --host 127.0.0.1 --port 8000
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

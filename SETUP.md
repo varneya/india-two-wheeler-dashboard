@@ -369,6 +369,70 @@ Find the offender: `lsof -ti :8000 | xargs kill` (macOS / Linux) or use `netstat
 
 ---
 
+## Hosting the backend on Oracle Cloud (Always Free)
+
+If you want the backend reachable 24/7 from any device — not just your laptop —
+the cheapest path is an **Oracle Cloud Always-Free ARM Ampere VM** (2 OCPU /
+12 GB RAM, no monthly charge ever). The bundled bootstrap script does
+everything that can be automated end-to-end on the VM in one shot.
+
+### One-time prerequisites you do yourself (~30 min)
+
+1. **Provision an Oracle Cloud Always-Free ARM VM**
+   (`VM.Standard.A1.Flex`, 2 OCPU + 12 GB RAM, Ubuntu 24.04). Allocate a
+   public IP. In the VCN security list, open inbound TCP 22, 80, 443.
+   On Oracle Linux you also need `sudo iptables -I INPUT -p tcp --dport 80 -j ACCEPT`
+   and the same for 443 (Ubuntu's default iptables is permissive — skip this step there).
+
+2. **Sign up at <https://www.duckdns.org/>** (GitHub OAuth, ~2 min). Create
+   a subdomain (e.g. `varneya-bikes`), copy your DuckDNS token, and set the
+   subdomain's A record to your VM's public IP.
+
+3. **SSH into the VM** as a sudo-capable user.
+
+### Run the bootstrap (~10–20 min, mostly model downloads)
+
+```bash
+sudo \
+  TWB_DUCKDNS_DOMAIN=varneya-bikes \
+  TWB_DUCKDNS_TOKEN=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx \
+  TWB_ANTHROPIC_KEY=sk-ant-...  \    # optional — only needed for the Claude theme method
+  bash <(curl -fsSL https://raw.githubusercontent.com/varneya/india-two-wheeler-dashboard/main/scripts/setup_oracle_vm.sh)
+```
+
+The script:
+
+1. `apt install`s Python 3.12, git, Caddy, Ollama
+2. Clones the repo to `/opt/twowheeler` and runs `scripts/install_backend.sh` (venv + pip)
+3. Pulls `nomic-embed-text` + `mistral:7b` (~4.7 GB)
+4. Writes systemd units for the backend, the daily scrape refresh, and the
+   DuckDNS A-record updater; enables them all
+5. Drops a Caddyfile that terminates TLS (Let's Encrypt via HTTP-01) for
+   `${TWB_DUCKDNS_DOMAIN}.duckdns.org` and reverse-proxies to `:8000`
+6. Prints the verification curls
+
+### Point the GitHub Pages frontend at the new backend
+
+In `.github/workflows/deploy.yml`, change `VITE_API_BASE` from
+`http://localhost:8000/api` to `https://varneya-bikes.duckdns.org/api`,
+push to `main`, and the deploy workflow rebuilds + publishes. Visitors no
+longer need a local backend running — your Oracle VM serves everyone.
+
+### Operational caveats
+
+- **Oracle reclaims Always-Free instances from accounts that never spend
+  a cent.** Spin up a $0.01-paid resource for an hour every couple of
+  months, or just have a billing event of any size, to avoid this.
+- **Capacity wall**: ARM Ampere stock is scarce in popular regions. If
+  provisioning fails with "Out of capacity", retry every few hours or pick
+  a quieter region (Mumbai, Hyderabad, Singapore, Seoul tend to have stock).
+- **Ops**: the script is idempotent — re-run it any time you change the
+  DuckDNS domain, Anthropic key, or want to upgrade after `git pull`.
+- **Logs**: `journalctl -u twowheeler-backend -f` for the API,
+  `journalctl -u caddy -f` for TLS issues.
+
+---
+
 ## Total install footprint (rough)
 
 | Component | Disk |

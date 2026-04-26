@@ -1,0 +1,18 @@
+# Re-asserts the DuckDNS A record so it always points at the VM's current
+# public IP. Oracle Always-Free instances usually keep the same public IP
+# across reboots, but stop/start cycles can rotate it. Cheap insurance.
+#
+# Reads ${TWB_DUCKDNS_DOMAIN} (subdomain part only, e.g. "varneya-bikes")
+# and ${TWB_DUCKDNS_TOKEN} from /etc/twowheeler/duckdns.env
+
+[Unit]
+Description=India Two-Wheeler Dashboard — DuckDNS A-record update
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/twowheeler/duckdns.env
+ExecStart=/bin/sh -c '/usr/bin/curl -fsS \
+    "https://www.duckdns.org/update?domains=$${TWB_DUCKDNS_DOMAIN}&token=$${TWB_DUCKDNS_TOKEN}&ip=" \
+    -o /var/log/twowheeler-duckdns.log'

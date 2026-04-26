@@ -1,0 +1,13 @@
+# Daily kick of the 4-stage scrape pipeline. The companion .timer file
+# fires this nightly. The backend's /api/refresh-all endpoint is idempotent
+# (skips a run if one is already in flight) so missed/overlapping fires
+# are safe.
+
+[Unit]
+Description=India Two-Wheeler Dashboard — daily scrape refresh
+After=twowheeler-backend.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/curl -fsS -X POST http://127.0.0.1:8000/api/refresh-all
