@@ -87,6 +87,20 @@ cd india-two-wheeler-dashboard
 
 ## 3. Backend (FastAPI + Python)
 
+> **Recommended: bundled bootstrap scripts.** They check Python version, offer to install Python 3.12 if missing (Homebrew on macOS, apt on Debian/Ubuntu, winget on Windows), create the venv, upgrade pip, and `pip install -r requirements.txt` in one shot. Idempotent — safe to re-run.
+>
+> **macOS / Linux:**
+> ```bash
+> chmod +x scripts/install_backend.sh
+> ./scripts/install_backend.sh
+> ```
+> **Windows (PowerShell):**
+> ```powershell
+> powershell -ExecutionPolicy Bypass -File scripts\install_backend.ps1
+> ```
+>
+> If you'd rather do it by hand, the manual steps follow.
+
 ### 3a. Create and activate a virtual environment
 
 ```bash

@@ -47,9 +47,14 @@ const INSTALL_COMMANDS: Record<Platform, PlatformCommands> = {
     prereqs: `# One-time: install Python 3.10+, Node 20+, Git
 brew install python@3.12 node git`,
     backend: `git clone https://github.com/varneya/india-two-wheeler-dashboard.git
-cd india-two-wheeler-dashboard/backend
-python3 -m venv venv && source venv/bin/activate
-pip install -r requirements.txt
+cd india-two-wheeler-dashboard
+
+# Easiest: bundled bootstrap script (Python check, venv, pip install)
+chmod +x scripts/install_backend.sh
+./scripts/install_backend.sh
+
+# Then start the server
+cd backend && source venv/bin/activate
 uvicorn main:app --port 8000`,
     ollama: `# Install
 brew install ollama
@@ -63,13 +68,19 @@ launchctl setenv OLLAMA_ORIGINS "https://varneya.github.io"
 once and restart the Ollama.app from /Applications.`,
   },
   windows: {
-    prereqs: `# One-time, in PowerShell as Admin: install Python 3.10+, Node 20+, Git
-winget install Python.Python.3.12 OpenJS.NodeJS Git.Git`,
+    prereqs: `# One-time, in PowerShell as Admin: install Node 20+ and Git
+# (the backend bootstrap script will install Python 3.12 if missing)
+winget install OpenJS.NodeJS Git.Git`,
     backend: `git clone https://github.com/varneya/india-two-wheeler-dashboard.git
-cd india-two-wheeler-dashboard\\backend
-python -m venv venv
-venv\\Scripts\\activate
-pip install -r requirements.txt
+cd india-two-wheeler-dashboard
+
+# Easiest: bundled bootstrap script (installs Python 3.12 via winget if
+# needed, creates venv, pip install -r requirements.txt)
+powershell -ExecutionPolicy Bypass -File scripts\\install_backend.ps1
+
+# Then start the server
+cd backend
+.\\venv\\Scripts\\activate
 uvicorn main:app --port 8000`,
     ollama: `# Easiest: bundled PowerShell installer (sets OLLAMA_ORIGINS
 # persistently, pulls a default model, smoke-tests it).
@@ -91,9 +102,14 @@ Environment Variables and restart Ollama.`,
 sudo apt update
 sudo apt install -y python3 python3-venv python3-pip nodejs npm git`,
     backend: `git clone https://github.com/varneya/india-two-wheeler-dashboard.git
-cd india-two-wheeler-dashboard/backend
-python3 -m venv venv && source venv/bin/activate
-pip install -r requirements.txt
+cd india-two-wheeler-dashboard
+
+# Easiest: bundled bootstrap script (Python check, venv, pip install)
+chmod +x scripts/install_backend.sh
+./scripts/install_backend.sh
+
+# Then start the server
+cd backend && source venv/bin/activate
 uvicorn main:app --port 8000`,
     ollama: `# Install
 curl -fsSL https://ollama.com/install.sh | sh
