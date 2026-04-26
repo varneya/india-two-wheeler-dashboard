@@ -1,13 +1,20 @@
 """
-Mac hardware detection + Ollama status checker.
-Detects chip, RAM, recommends Ollama models suited to the machine.
+Cross-platform hardware detection + Ollama status checker.
+
+Detects chip + RAM on macOS, Windows, and Linux; recommends Ollama models
+suited to the machine. RAM is sourced from `psutil` (single API on all OSes).
+Chip name uses the most reliable per-OS source available.
 """
 
+import os
+import platform
 import re
 import subprocess
-import json
+import sys
 import shutil
 import requests as http_requests
+
+import psutil
 
 
 # ---------------------------------------------------------------------------
@@ -27,7 +34,7 @@ MODEL_CATALOGUE = [
 
 
 # ---------------------------------------------------------------------------
-# Mac hardware detection
+# Cross-platform hardware detection
 # ---------------------------------------------------------------------------
 
 def _run(cmd: list[str]) -> str:
@@ -37,28 +44,76 @@ def _run(cmd: list[str]) -> str:
         return ""
 
 
-def detect_hardware() -> dict:
+def _ram_gb() -> int:
+    """Total physical RAM in whole gigabytes. psutil works identically on
+    macOS / Windows / Linux. Falls back to 8 only if psutil itself errors."""
+    try:
+        return max(1, round(psutil.virtual_memory().total / (1024 ** 3)))
+    except Exception:
+        return 8
+
+
+def _chip_macos() -> str:
     raw = _run(["system_profiler", "SPHardwareDataType"])
+    m = re.search(r"Chip:\s*(.+)", raw)
+    if m:
+        return m.group(1).strip()
+    # Older Macs don't print "Chip:"; try "Processor Name"
+    m = re.search(r"Processor Name:\s*(.+)", raw)
+    if m:
+        return m.group(1).strip()
+    return platform.processor() or "Unknown"
 
-    chip = "Unknown"
-    ram_gb = 8
 
-    chip_match = re.search(r"Chip:\s*(.+)", raw)
-    if chip_match:
-        chip = chip_match.group(1).strip()
+def _chip_windows() -> str:
+    # platform.processor() on Windows returns the registry-resolved name
+    # (e.g. "Intel64 Family 6 Model 154 Stepping 3, GenuineIntel"). It's not
+    # always the marketing name, but it's the most reliable cross-Python-
+    # version source. Fall back to %PROCESSOR_IDENTIFIER% if empty.
+    name = platform.processor()
+    if name and name.strip():
+        return name.strip()
+    env_name = os.environ.get("PROCESSOR_IDENTIFIER")
+    if env_name:
+        return env_name.strip()
+    return "Unknown"
 
-    ram_match = re.search(r"Memory:\s*(\d+)\s*GB", raw)
-    if ram_match:
-        ram_gb = int(ram_match.group(1))
 
-    # Determine Apple Silicon generation for display
-    generation = "Unknown"
-    if "Apple" in chip:
-        gen_match = re.search(r"(M\d+)(\s*(Pro|Max|Ultra))?", chip)
-        if gen_match:
-            generation = gen_match.group(0).strip()
+def _chip_linux() -> str:
+    # /proc/cpuinfo "model name" is the friendliest source on Linux.
+    try:
+        with open("/proc/cpuinfo", "r") as f:
+            for line in f:
+                if line.lower().startswith("model name"):
+                    _, _, val = line.partition(":")
+                    val = val.strip()
+                    if val:
+                        return val
+    except OSError:
+        pass
+    return platform.processor() or "Unknown"
 
-    return {"chip": chip, "generation": generation, "ram_gb": ram_gb}
+
+def _apple_generation(chip: str) -> str:
+    if "Apple" not in chip:
+        return "Unknown"
+    m = re.search(r"(M\d+)(\s*(Pro|Max|Ultra))?", chip)
+    return m.group(0).strip() if m else "Unknown"
+
+
+def detect_hardware() -> dict:
+    if sys.platform == "darwin":
+        chip = _chip_macos()
+    elif sys.platform == "win32":
+        chip = _chip_windows()
+    else:
+        chip = _chip_linux()
+
+    return {
+        "chip": chip,
+        "generation": _apple_generation(chip),
+        "ram_gb": _ram_gb(),
+    }
 
 
 # ---------------------------------------------------------------------------

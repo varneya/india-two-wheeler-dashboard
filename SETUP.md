@@ -194,7 +194,19 @@ brew install ollama
 curl -fsSL https://ollama.com/install.sh | sh
 ```
 
-**Windows:** download the installer from <https://ollama.com/download>.
+**Windows — easiest:** use the bundled PowerShell installer (auto-installs Ollama, sets `OLLAMA_ORIGINS` persistently, pulls a default model + smoke-tests it):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\install_ollama.ps1
+powershell -ExecutionPolicy Bypass -File scripts\install_ollama.ps1 mistral:7b
+```
+
+**Windows — manual:** download the installer from <https://ollama.com/download>, then in PowerShell:
+
+```powershell
+$env:OLLAMA_ORIGINS = "https://varneya.github.io"
+ollama serve
+```
 
 ### 5b. Start the server
 

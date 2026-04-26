@@ -71,17 +71,20 @@ python -m venv venv
 venv\\Scripts\\activate
 pip install -r requirements.txt
 uvicorn main:app --port 8000`,
-    ollama: `# 1. Download the installer from https://ollama.com/download/windows
-#    and run OllamaSetup.exe.
-# 2. Quit any running Ollama from the system tray.
-# 3. In PowerShell, set the env var and restart:
+    ollama: `# Easiest: bundled PowerShell installer (sets OLLAMA_ORIGINS
+# persistently, pulls a default model, smoke-tests it).
+powershell -ExecutionPolicy Bypass -File scripts\\install_ollama.ps1
+
+# Manual alternative — download installer from
+# https://ollama.com/download/windows, then in PowerShell:
 $env:OLLAMA_ORIGINS = "https://varneya.github.io"
 ollama serve`,
     models: `ollama pull nomic-embed-text
 ollama pull mistral:7b      # or llama3.2:3b for 8 GB RAM, phi3:mini for 4 GB`,
-    notes: `Tip: to make OLLAMA_ORIGINS persist, set it as a User
-environment variable via System Properties → Environment Variables,
-then restart Ollama.`,
+    notes: `Tip: the bundled installer persists OLLAMA_ORIGINS via
+[Environment]::SetEnvironmentVariable(...) so it survives reboots.
+If you went the manual route, set it once via System Properties →
+Environment Variables and restart Ollama.`,
   },
   linux: {
     prereqs: `# One-time (Debian/Ubuntu): install Python 3.10+, Node 20+, Git
