@@ -94,10 +94,13 @@ cd india-two-wheeler-dashboard
 > chmod +x scripts/install_backend.sh
 > ./scripts/install_backend.sh
 > ```
-> **Windows (PowerShell):**
+> **Windows:**
 > ```powershell
-> powershell -ExecutionPolicy Bypass -File scripts\install_backend.ps1
+> scripts\install_backend.cmd
 > ```
+> (The `.cmd` wrapper invokes PowerShell with `-ExecutionPolicy Bypass` so the
+> bundled `.ps1` runs even on a fresh Windows machine where the default policy
+> blocks unsigned scripts. You can also double-click it from Explorer.)
 >
 > If you'd rather do it by hand, the manual steps follow.
 
@@ -208,12 +211,14 @@ brew install ollama
 curl -fsSL https://ollama.com/install.sh | sh
 ```
 
-**Windows — easiest:** use the bundled PowerShell installer (auto-installs Ollama, sets `OLLAMA_ORIGINS` persistently, pulls a default model + smoke-tests it):
+**Windows — easiest:** use the bundled installer (auto-installs Ollama, sets `OLLAMA_ORIGINS` persistently, pulls a default model + smoke-tests it):
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts\install_ollama.ps1
-powershell -ExecutionPolicy Bypass -File scripts\install_ollama.ps1 mistral:7b
+scripts\install_ollama.cmd                  # default: llama3.2:3b
+scripts\install_ollama.cmd mistral:7b       # or pick a model
 ```
+
+The `.cmd` wrapper invokes PowerShell with `-ExecutionPolicy Bypass` so it works on a fresh Windows machine without you having to flip any policy.
 
 **Windows — manual:** download the installer from <https://ollama.com/download>, then in PowerShell:
 

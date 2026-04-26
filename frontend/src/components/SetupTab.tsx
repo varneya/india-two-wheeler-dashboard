@@ -75,16 +75,18 @@ winget install OpenJS.NodeJS Git.Git`,
 cd india-two-wheeler-dashboard
 
 # Easiest: bundled bootstrap script (installs Python 3.12 via winget if
-# needed, creates venv, pip install -r requirements.txt)
-powershell -ExecutionPolicy Bypass -File scripts\\install_backend.ps1
+# needed, creates venv, pip install -r requirements.txt). The .cmd
+# wrapper sidesteps the default ExecutionPolicy that blocks .ps1 files.
+scripts\\install_backend.cmd
 
 # Then start the server
 cd backend
 .\\venv\\Scripts\\activate
 uvicorn main:app --port 8000`,
-    ollama: `# Easiest: bundled PowerShell installer (sets OLLAMA_ORIGINS
-# persistently, pulls a default model, smoke-tests it).
-powershell -ExecutionPolicy Bypass -File scripts\\install_ollama.ps1
+    ollama: `# Easiest: bundled installer (sets OLLAMA_ORIGINS persistently,
+# pulls a default model, smoke-tests it). The .cmd wrapper handles
+# Windows' default ExecutionPolicy for you.
+scripts\\install_ollama.cmd
 
 # Manual alternative — download installer from
 # https://ollama.com/download/windows, then in PowerShell:
