@@ -81,7 +81,13 @@ export function RefreshTab() {
         setStatus(s)
         // Detect stage transitions to invalidate caches at the right moment
         if (previousStageRef.current !== s.stage) {
-          if (s.stage === 'reviews' || s.stage === 'other_sources' || s.stage === 'done') {
+          if (
+            s.stage === 'reviews' ||
+            s.stage === 'other_sources' ||
+            s.stage === 'autopunditz' ||
+            s.stage === 'retail' ||
+            s.stage === 'done'
+          ) {
             qc.invalidateQueries({ queryKey: ['bikes'] })
             qc.invalidateQueries({ queryKey: ['brands'] })
             qc.invalidateQueries({ queryKey: ['brandModels'] })
@@ -99,8 +105,10 @@ export function RefreshTab() {
               (s.other_sources?.zigwheels_added ?? 0) +
               (s.other_sources?.reddit_added ?? 0)
             const totalReviews = (s.reviews.reviews_added ?? 0) + extraReviews
+            const apModel = s.autopunditz?.model_rows_added ?? 0
+            const apBrand = s.autopunditz?.brand_rows_added ?? 0
             toast.success('Data refresh complete', {
-              description: `${s.discovery.bikes_found} bikes · ${totalReviews} reviews · ${s.retail.rows_added} retail rows${dur ? ` · ${dur}` : ''}`,
+              description: `${s.discovery.bikes_found} bikes · ${totalReviews} reviews · ${apModel + apBrand} AutoPunditz rows · ${s.retail.rows_added} FADA rows${dur ? ` · ${dur}` : ''}`,
             })
           }
           if (s.stage === 'error' && s.error) {
@@ -148,7 +156,7 @@ export function RefreshTab() {
   const dBikes = status?.discovery.bikes_found ?? 0
   const dPercent = dUrlsTotal > 0 ? (dUrlsDone / dUrlsTotal) * 100 : 0
   const stage1Active = stage === 'discovering'
-  const stage1Complete = ['reviews', 'other_sources', 'retail', 'done'].includes(stage)
+  const stage1Complete = ['reviews', 'other_sources', 'autopunditz', 'retail', 'done'].includes(stage)
   const stage1Percent = stage1Complete ? 100 : dPercent
 
   // Stage 2 — reviews (BikeWale)
@@ -157,7 +165,7 @@ export function RefreshTab() {
   const rCurrent = status?.reviews.current_bike
   const rAdded = status?.reviews.reviews_added ?? 0
   const stage2Active = stage === 'reviews'
-  const stage2Complete = ['other_sources', 'retail', 'done'].includes(stage)
+  const stage2Complete = ['other_sources', 'autopunditz', 'retail', 'done'].includes(stage)
   const stage2Percent =
     stage2Complete ? 100 : rTotal > 0 ? (rDone / rTotal) * 100 : 0
 
@@ -170,18 +178,28 @@ export function RefreshTab() {
   const oReddit = status?.other_sources?.reddit_added ?? 0
   const oTotalAdded = oBikedekho + oZigwheels + oReddit
   const stage3Active = stage === 'other_sources'
-  const stage3Complete = ['retail', 'done'].includes(stage)
+  const stage3Complete = ['autopunditz', 'retail', 'done'].includes(stage)
   const stage3Percent =
     stage3Complete ? 100 : oTotal > 0 ? (oDone / oTotal) * 100 : 0
 
-  // Stage 4 — FADA retail
+  // Stage 4 — AutoPunditz (per-bike prose + brand-level aggregate posts)
+  const apPostsTotal = status?.autopunditz?.posts_total ?? 0
+  const apPostsDone = status?.autopunditz?.posts_done ?? 0
+  const apModelRows = status?.autopunditz?.model_rows_added ?? 0
+  const apBrandRows = status?.autopunditz?.brand_rows_added ?? 0
+  const stage4Active = stage === 'autopunditz'
+  const stage4Complete = ['retail', 'done'].includes(stage)
+  const stage4Percent =
+    stage4Complete ? 100 : apPostsTotal > 0 ? (apPostsDone / apPostsTotal) * 100 : 0
+
+  // Stage 5 — FADA retail
   const rPdfTotal = status?.retail?.pdfs_total ?? 0
   const rPdfDone = status?.retail?.pdfs_done ?? 0
   const rRows = status?.retail?.rows_added ?? 0
-  const stage4Active = stage === 'retail'
-  const stage4Complete = stage === 'done'
-  const stage4Percent =
-    stage4Complete ? 100 : rPdfTotal > 0 ? (rPdfDone / rPdfTotal) * 100 : 0
+  const stage5Active = stage === 'retail'
+  const stage5Complete = stage === 'done'
+  const stage5Percent =
+    stage5Complete ? 100 : rPdfTotal > 0 ? (rPdfDone / rPdfTotal) * 100 : 0
 
   // ---------------------------------------------------------------------------
   // Render
@@ -194,7 +212,7 @@ export function RefreshTab() {
           <div>
             <h2 className="text-lg font-semibold text-foreground">Data Refresh</h2>
             <p className="text-muted-foreground text-sm mt-1">
-              Re-scrape RushLane wholesale, BikeWale reviews, and FADA monthly retail data.
+              Re-scrape RushLane + AutoPunditz wholesale, BikeWale reviews, and FADA monthly retail data.
             </p>
           </div>
           <Button
@@ -254,7 +272,7 @@ export function RefreshTab() {
                   variant={stage1Complete ? 'success' : stage1Active ? 'info' : 'secondary'}
                   className="rounded-full"
                 >
-                  Stage 1 / 4
+                  Stage 1 / 5
                 </Badge>
                 <span className="text-white font-medium">Discovering bikes from RushLane</span>
                 {stage1Active && status?.discovery.stage && (
@@ -282,7 +300,7 @@ export function RefreshTab() {
                   variant={stage2Complete ? 'success' : stage2Active ? 'info' : 'secondary'}
                   className="rounded-full"
                 >
-                  Stage 2 / 4
+                  Stage 2 / 5
                 </Badge>
                 <span className="text-white font-medium">Refreshing BikeWale reviews</span>
                 {stage2Active && rCurrent && (
@@ -310,7 +328,7 @@ export function RefreshTab() {
                   variant={stage3Complete ? 'success' : stage3Active ? 'info' : 'secondary'}
                   className="rounded-full"
                 >
-                  Stage 3 / 4
+                  Stage 3 / 5
                 </Badge>
                 <span className="text-white font-medium">BikeDekho · ZigWheels · Reddit</span>
                 {stage3Active && oCurrent && (
@@ -329,7 +347,7 @@ export function RefreshTab() {
           </div>
         )}
 
-        {/* Stage 4 — FADA retail */}
+        {/* Stage 4 — AutoPunditz */}
         {(isRunning || isDone || isError) && (
           <div className="space-y-2">
             <div className="flex items-center justify-between text-sm">
@@ -338,19 +356,44 @@ export function RefreshTab() {
                   variant={stage4Complete ? 'success' : stage4Active ? 'info' : 'secondary'}
                   className="rounded-full"
                 >
-                  Stage 4 / 4
+                  Stage 4 / 5
+                </Badge>
+                <span className="text-white font-medium">Scraping AutoPunditz posts</span>
+              </div>
+              <span className="text-xs text-slate-400 font-mono tabular-nums">
+                {stage4Complete
+                  ? `${apModelRows} model · ${apBrandRows} brand rows`
+                  : apPostsTotal > 0
+                  ? `${apPostsDone}/${apPostsTotal} posts · ${apModelRows + apBrandRows} rows`
+                  : 'queued'}
+              </span>
+            </div>
+            <ProgressBar percent={stage4Percent} active={stage4Active} />
+          </div>
+        )}
+
+        {/* Stage 5 — FADA retail */}
+        {(isRunning || isDone || isError) && (
+          <div className="space-y-2">
+            <div className="flex items-center justify-between text-sm">
+              <div className="flex items-center gap-2 min-w-0">
+                <Badge
+                  variant={stage5Complete ? 'success' : stage5Active ? 'info' : 'secondary'}
+                  className="rounded-full"
+                >
+                  Stage 5 / 5
                 </Badge>
                 <span className="text-white font-medium">Fetching FADA retail data</span>
               </div>
               <span className="text-xs text-slate-400 font-mono tabular-nums">
-                {stage4Complete
+                {stage5Complete
                   ? `${rRows} rows added`
                   : rPdfTotal > 0
                   ? `${rPdfDone}/${rPdfTotal} PDFs · ${rRows} rows`
                   : 'queued'}
               </span>
             </div>
-            <ProgressBar percent={stage4Percent} active={stage4Active} />
+            <ProgressBar percent={stage5Percent} active={stage5Active} />
           </div>
         )}
         </CardContent>
@@ -361,8 +404,10 @@ export function RefreshTab() {
         Discovery hits RushLane's monthly sales-breakup articles. Stage 2 scrapes BikeWale's per-bike
         reviews; Stage 3 layers in BikeDekho user reviews (with ratings), ZigWheels user reviews, and
         relevant comments from <a className="underline" href="https://www.reddit.com/r/IndianBikes/" target="_blank" rel="noreferrer">r/IndianBikes</a>.
-        Retail data comes from FADA's monthly Vehicle Retail Data PDFs (brand-level only). Theme
-        analysis is not auto-rerun — open the Theme Analysis tab and click Run for a specific bike.
+        Stage 4 augments wholesale data with <a className="underline" href="https://www.autopunditz.com/two-wheeler-sales-figures" target="_blank" rel="noreferrer">AutoPunditz</a> per-brand
+        prose (per-model rows) and monthly aggregate posts (brand-level totals). Retail data comes
+        from FADA's monthly Vehicle Retail Data PDFs (brand-level only). Theme analysis is not
+        auto-rerun — open the Theme Analysis tab and click Run for a specific bike.
       </p>
     </div>
   )

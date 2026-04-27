@@ -54,7 +54,15 @@ export const fetchCompare = (ids: string[]): Promise<CompareResponse> =>
 
 export interface RefreshAllStatus {
   running: boolean
-  stage: 'idle' | 'discovering' | 'reviews' | 'other_sources' | 'retail' | 'done' | 'error'
+  stage:
+    | 'idle'
+    | 'discovering'
+    | 'reviews'
+    | 'other_sources'
+    | 'autopunditz'
+    | 'retail'
+    | 'done'
+    | 'error'
   started_at: string | null
   finished_at: string | null
   duration_seconds: number | null
@@ -79,6 +87,12 @@ export interface RefreshAllStatus {
     bikedekho_added: number
     zigwheels_added: number
     reddit_added: number
+  }
+  autopunditz?: {
+    posts_total: number
+    posts_done: number
+    model_rows_added: number
+    brand_rows_added: number
   }
   retail: {
     pdfs_total: number
