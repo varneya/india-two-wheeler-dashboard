@@ -23,6 +23,8 @@ import time
 
 import requests
 
+import url_cache
+
 HEADERS = {
     # Reddit asks for a non-default UA — they 429 generic clients aggressively.
     "User-Agent": "india-two-wheeler-dashboard/0.1 (+https://github.com/varneya/india-two-wheeler-dashboard)",
@@ -70,13 +72,11 @@ def _search_posts(query: str) -> list[dict]:
 
 
 def _fetch_comments(post_id: str) -> list[dict]:
-    url = f"{BASE_URL}/comments/{post_id}/.json"
-    try:
-        resp = requests.get(url, headers=HEADERS, params={"limit": "25"}, timeout=15)
-    except requests.RequestException as e:
-        print(f"[reddit] comments {post_id} failed: {e}")
+    url = f"{BASE_URL}/comments/{post_id}/.json?limit=25"
+    resp, was_cached = url_cache.conditional_get(url, headers=HEADERS, timeout=15)
+    if was_cached:
         return []
-    if resp.status_code != 200:
+    if not resp or resp.status_code != 200:
         return []
     try:
         data = resp.json()

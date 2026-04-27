@@ -52,6 +52,15 @@ export const fetchCompare = (ids: string[]): Promise<CompareResponse> =>
 // Refresh-all orchestrator
 // ---------------------------------------------------------------------------
 
+// Per-stage cache counters reported by the backend.
+// `cached`  = URLs whose body was unchanged since the previous refresh
+//             (304 Not Modified or matching content hash) — work skipped.
+// `fetched` = URLs that returned new bytes and were fully parsed.
+interface StageCache {
+  cached?: number
+  fetched?: number
+}
+
 export interface RefreshAllStatus {
   running: boolean
   stage:
@@ -66,20 +75,21 @@ export interface RefreshAllStatus {
   started_at: string | null
   finished_at: string | null
   duration_seconds: number | null
-  discovery: {
+  force?: boolean
+  discovery: StageCache & {
     stage: string
     urls_total: number
     urls_done: number
     bikes_found: number
   }
-  reviews: {
+  reviews: StageCache & {
     bikes_total: number
     bikes_done: number
     current_bike: string | null
     current_bike_id: string | null
     reviews_added: number
   }
-  other_sources: {
+  other_sources: StageCache & {
     bikes_total: number
     bikes_done: number
     current_bike: string | null
@@ -88,13 +98,13 @@ export interface RefreshAllStatus {
     zigwheels_added: number
     reddit_added: number
   }
-  autopunditz?: {
+  autopunditz?: StageCache & {
     posts_total: number
     posts_done: number
     model_rows_added: number
     brand_rows_added: number
   }
-  retail: {
+  retail: StageCache & {
     pdfs_total: number
     pdfs_done: number
     rows_added: number
@@ -102,8 +112,11 @@ export interface RefreshAllStatus {
   error: string | null
 }
 
-export const triggerRefreshAll = (): Promise<{ status: string }> =>
-  api.post('/refresh-all').then(r => r.data)
+export const triggerRefreshAll = (
+  opts: { force?: boolean } = {},
+): Promise<{ status: string }> =>
+  api.post('/refresh-all', null, { params: opts.force ? { force: true } : {} })
+    .then(r => r.data)
 
 export const fetchRefreshAllStatus = (): Promise<RefreshAllStatus> =>
   api.get<RefreshAllStatus>('/refresh-all/status').then(r => r.data)

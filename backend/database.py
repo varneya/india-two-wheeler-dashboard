@@ -123,6 +123,28 @@ def init_db():
                 cached_at  TEXT NOT NULL,
                 PRIMARY KEY (post_id, model)
             );
+            -- HTTP conditional-GET cache. For each URL we ever fetched, store
+            -- the validators (ETag, Last-Modified) and a SHA256 of the body so
+            -- subsequent fetches can short-circuit on 304 Not Modified or on
+            -- a matching content hash (for hosts that ignore validators).
+            CREATE TABLE IF NOT EXISTS url_cache (
+                url           TEXT PRIMARY KEY,
+                etag          TEXT,
+                last_modified TEXT,
+                content_hash  TEXT,
+                last_status   INTEGER,
+                last_fetched_at TEXT NOT NULL
+            );
+            -- Per-bike-source review cursor: the newest post_id we've seen.
+            -- Lets each review scraper stop pagination early once it hits a
+            -- known post id, instead of always re-walking the full first page.
+            CREATE TABLE IF NOT EXISTS review_cursor (
+                bike_id        TEXT NOT NULL,
+                source         TEXT NOT NULL,
+                last_post_id   TEXT,
+                updated_at     TEXT NOT NULL,
+                PRIMARY KEY (bike_id, source)
+            );
         """)
 
         # ------------- Add bike_id columns (idempotent) -------------
@@ -694,6 +716,74 @@ def get_wholesale_brand_totals(brand_id: str, source: str = "rushlane") -> list[
             (prefix, source),
         ).fetchall()
     return [{"month": r["month"], "units": r["units"]} for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# URL conditional-GET cache + per-bike review cursors
+# ---------------------------------------------------------------------------
+
+def get_url_cache_entry(url: str) -> dict | None:
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT url, etag, last_modified, content_hash, last_status, last_fetched_at "
+            "FROM url_cache WHERE url = ?",
+            (url,),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def upsert_url_cache(
+    url: str,
+    etag: str | None,
+    last_modified: str | None,
+    content_hash: str | None,
+    last_status: int,
+):
+    now = datetime.now(timezone.utc).isoformat()
+    with get_conn() as conn:
+        conn.execute(
+            """INSERT INTO url_cache (url, etag, last_modified, content_hash,
+                                      last_status, last_fetched_at)
+               VALUES (?, ?, ?, ?, ?, ?)
+               ON CONFLICT(url) DO UPDATE SET
+                 etag = excluded.etag,
+                 last_modified = excluded.last_modified,
+                 content_hash = excluded.content_hash,
+                 last_status = excluded.last_status,
+                 last_fetched_at = excluded.last_fetched_at""",
+            (url, etag, last_modified, content_hash, last_status, now),
+        )
+
+
+def clear_url_cache() -> int:
+    """Wipe the cache. Returns the number of rows deleted. Used by the
+    /api/refresh-all?force=true endpoint."""
+    with get_conn() as conn:
+        cur = conn.execute("DELETE FROM url_cache")
+        return cur.rowcount
+
+
+def get_review_cursor(bike_id: str, source: str) -> str | None:
+    """Return last_post_id we've seen for this (bike, source), or None."""
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT last_post_id FROM review_cursor WHERE bike_id = ? AND source = ?",
+            (bike_id, source),
+        ).fetchone()
+    return row["last_post_id"] if row else None
+
+
+def upsert_review_cursor(bike_id: str, source: str, last_post_id: str):
+    now = datetime.now(timezone.utc).isoformat()
+    with get_conn() as conn:
+        conn.execute(
+            """INSERT INTO review_cursor (bike_id, source, last_post_id, updated_at)
+               VALUES (?, ?, ?, ?)
+               ON CONFLICT(bike_id, source) DO UPDATE SET
+                 last_post_id = excluded.last_post_id,
+                 updated_at = excluded.updated_at""",
+            (bike_id, source, last_post_id, now),
+        )
 
 
 # ---------------------------------------------------------------------------

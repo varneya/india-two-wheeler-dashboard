@@ -25,6 +25,7 @@ import bike_registry
 import bike_catalogue
 import fada_scraper
 import autopunditz_scraper
+import url_cache
 
 
 LEGACY_BIKE_ID = "yamaha-xsr-155"
@@ -327,34 +328,44 @@ _refresh_all_state: dict = {
     "stage": "idle",            # idle | discovering | reviews | other_sources | autopunditz | retail | done | error
     "started_at": None,
     "finished_at": None,
+    "force": False,             # set when caller invoked /api/refresh-all?force=true
     "discovery": {
         "stage": "", "urls_total": 0, "urls_done": 0, "bikes_found": 0,
+        "cached": 0, "fetched": 0,
     },
     "reviews": {
         "bikes_total": 0, "bikes_done": 0,
         "current_bike": None, "current_bike_id": None,
         "reviews_added": 0,
+        "cached": 0, "fetched": 0,
     },
     "other_sources": {          # BikeDekho + ZigWheels + Reddit
         "bikes_total": 0, "bikes_done": 0,
         "current_bike": None, "current_bike_id": None,
         "bikedekho_added": 0, "zigwheels_added": 0, "reddit_added": 0,
+        "cached": 0, "fetched": 0,
     },
     "autopunditz": {            # AutoPunditz brand + aggregate posts
         "posts_total": 0, "posts_done": 0,
         "model_rows_added": 0, "brand_rows_added": 0,
+        "cached": 0, "fetched": 0,
     },
     "retail": {                 # FADA monthly retail PDFs
         "pdfs_total": 0, "pdfs_done": 0, "rows_added": 0,
+        "cached": 0, "fetched": 0,
     },
     "error": None,
 }
 
 
-def _run_refresh_all():
+def _run_refresh_all(force: bool = False):
     global _refresh_all_running
     started = time.time()
     started_iso = __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat()
+
+    if force:
+        cleared = database.clear_url_cache()
+        print(f"[refresh-all] force=true: cleared {cleared} url_cache rows")
 
     with _refresh_all_lock:
         _refresh_all_state.update({
@@ -362,34 +373,51 @@ def _run_refresh_all():
             "stage": "discovering",
             "started_at": started_iso,
             "finished_at": None,
+            "force": force,
             "error": None,
         })
         _refresh_all_state["discovery"] = {
             "stage": "", "urls_total": 0, "urls_done": 0, "bikes_found": 0,
+            "cached": 0, "fetched": 0,
         }
         _refresh_all_state["reviews"] = {
             "bikes_total": 0, "bikes_done": 0,
             "current_bike": None, "current_bike_id": None,
             "reviews_added": 0,
+            "cached": 0, "fetched": 0,
         }
         _refresh_all_state["other_sources"] = {
             "bikes_total": 0, "bikes_done": 0,
             "current_bike": None, "current_bike_id": None,
             "bikedekho_added": 0, "zigwheels_added": 0, "reddit_added": 0,
+            "cached": 0, "fetched": 0,
         }
         _refresh_all_state["autopunditz"] = {
             "posts_total": 0, "posts_done": 0,
             "model_rows_added": 0, "brand_rows_added": 0,
+            "cached": 0, "fetched": 0,
         }
         _refresh_all_state["retail"] = {
             "pdfs_total": 0, "pdfs_done": 0, "rows_added": 0,
+            "cached": 0, "fetched": 0,
         }
+    # Reset thread-local cache counters before stage 1 starts.
+    url_cache.reset_stats()
+
+    def _flush_cache_stats(stage_key: str):
+        """Snapshot+zero url_cache counters and record them on the stage's
+        progress block. Call at the END of each stage."""
+        snap = url_cache.reset_stats()
+        with _refresh_all_lock:
+            _refresh_all_state[stage_key]["cached"] = snap["cached"]
+            _refresh_all_state[stage_key]["fetched"] = snap["fetched"]
 
     total_reviews = 0
     total_retail_rows = 0
     try:
         # Stage 1 — discovery
         _do_discovery_pass(_refresh_all_state["discovery"], _refresh_all_lock)
+        _flush_cache_stats("discovery")
 
         # Stage 2 — reviews per catalogued bike
         with _refresh_all_lock:
@@ -423,6 +451,7 @@ def _run_refresh_all():
                 _refresh_all_state["reviews"]["reviews_added"] = total_reviews
 
         database.log_reviews_run(total_reviews, None)
+        _flush_cache_stats("reviews")
 
         # Stage 3 — additional review sources (BikeDekho, ZigWheels, Reddit)
         # All three reuse the same `bikes` set as the BikeWale stage. Each
@@ -462,6 +491,8 @@ def _run_refresh_all():
 
             with _refresh_all_lock:
                 _refresh_all_state["other_sources"]["bikes_done"] += 1
+
+        _flush_cache_stats("other_sources")
 
         # Stage 4 — AutoPunditz: per-brand prose -> model rows in sales_data,
         # plus monthly aggregate posts -> brand rows in wholesale_brand_sales.
@@ -531,6 +562,8 @@ def _run_refresh_all():
         except Exception as ape:
             print(f"[refresh-all] autopunditz stage failed: {ape}")
 
+        _flush_cache_stats("autopunditz")
+
         # Stage 5 — FADA monthly retail PDFs (brand-level)
         with _refresh_all_lock:
             _refresh_all_state["stage"] = "retail"
@@ -558,6 +591,8 @@ def _run_refresh_all():
             # Don't fail the whole refresh if FADA breaks; just record it
             print(f"[refresh-all] FADA stage failed: {fe}")
 
+        _flush_cache_stats("retail")
+
         finished_iso = __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat()
         with _refresh_all_lock:
             _refresh_all_state.update({
@@ -582,14 +617,17 @@ def _run_refresh_all():
 
 
 @app.post("/api/refresh-all")
-def trigger_refresh_all():
+def trigger_refresh_all(force: bool = False):
+    """Kick off a full refresh in the background. `force=true` clears the
+    HTTP url_cache first, forcing every URL to be re-fetched (use after
+    upstream corrections or when something looks stale)."""
     global _refresh_all_running
     with _refresh_all_lock:
         if _refresh_all_running:
             return {"status": "already_running"}
         _refresh_all_running = True
-    threading.Thread(target=_run_refresh_all, daemon=True).start()
-    return {"status": "started"}
+    threading.Thread(target=_run_refresh_all, args=(force,), daemon=True).start()
+    return {"status": "started", "force": force}
 
 
 @app.get("/api/refresh-all/status")
@@ -602,6 +640,7 @@ def refresh_all_status():
             "started_at": _refresh_all_state["started_at"],
             "finished_at": _refresh_all_state["finished_at"],
             "duration_seconds": _refresh_all_state.get("duration_seconds"),
+            "force": _refresh_all_state.get("force", False),
             "discovery": dict(_refresh_all_state["discovery"]),
             "reviews": dict(_refresh_all_state["reviews"]),
             "other_sources": dict(_refresh_all_state.get("other_sources") or {}),

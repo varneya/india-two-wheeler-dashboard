@@ -26,6 +26,7 @@ import requests
 from bs4 import BeautifulSoup
 
 import bike_catalogue
+import url_cache
 from bike_registry import BRAND_DISPLAY, BRANDS, NON_MODELS
 
 HEADERS = {
@@ -86,6 +87,8 @@ _MONTH_RE = re.compile(
 # ---------------------------------------------------------------------------
 
 def _get(url: str, timeout: int = 20) -> requests.Response | None:
+    """Uncached GET. Used for the sitemap index; post bodies go through
+    fetch_article_text which uses the conditional-GET cache."""
     try:
         resp = requests.get(url, headers=HEADERS, timeout=timeout)
         resp.raise_for_status()
@@ -96,10 +99,13 @@ def _get(url: str, timeout: int = 20) -> requests.Response | None:
 
 
 def fetch_article_text(url: str) -> str | None:
-    """Fetch a post and return its body text. Strips nav/footer/script
-    so the prose extractor doesn't catch boilerplate numbers."""
-    resp = _get(url)
-    if not resp:
+    """Fetch a post body via conditional-GET and return parsed text. Returns
+    None when the post is unchanged since the previous fetch — caller treats
+    this as 'no new data', the previous parse already wrote rows to the DB."""
+    resp, was_cached = url_cache.conditional_get(url, headers=HEADERS, timeout=20)
+    if was_cached:
+        return None
+    if not resp or resp.status_code != 200:
         return None
     soup = BeautifulSoup(resp.text, "html.parser")
     for tag in soup(["script", "style", "nav", "header", "footer", "aside", "noscript"]):

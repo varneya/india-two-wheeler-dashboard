@@ -123,11 +123,11 @@ export function RefreshTab() {
     }, 1500)
   }
 
-  async function handleRefresh() {
+  async function handleRefresh(force = false) {
     setError(null)
     setSubmitting(true)
     try {
-      const r = await triggerRefreshAll()
+      const r = await triggerRefreshAll({ force })
       if (r.status === 'already_running') {
         // Just attach to the existing run
       }
@@ -201,6 +201,26 @@ export function RefreshTab() {
   const stage5Percent =
     stage5Complete ? 100 : rPdfTotal > 0 ? (rPdfDone / rPdfTotal) * 100 : 0
 
+  // Per-stage HTTP cache counters: "N cached / M fetched". Hidden when both
+  // are zero (idle / pre-stage). Cached count = URLs that 304'd or had a
+  // matching content hash; fetched count = URLs whose body was new.
+  function cacheCounter(s: { cached?: number; fetched?: number } | undefined) {
+    const cached = s?.cached ?? 0
+    const fetched = s?.fetched ?? 0
+    if (!cached && !fetched) return null
+    return (
+      <span className="text-xs text-slate-500 font-mono tabular-nums">
+        {cached > 0 && (
+          <span className="text-emerald-400/80">{cached} cached</span>
+        )}
+        {cached > 0 && fetched > 0 && ' · '}
+        {fetched > 0 && (
+          <span className="text-cyan-400/80">{fetched} fetched</span>
+        )}
+      </span>
+    )
+  }
+
   // ---------------------------------------------------------------------------
   // Render
   // ---------------------------------------------------------------------------
@@ -215,15 +235,25 @@ export function RefreshTab() {
               Re-scrape RushLane + AutoPunditz wholesale, BikeWale reviews, and FADA monthly retail data.
             </p>
           </div>
-          <Button
-            onClick={handleRefresh}
-            disabled={isRunning || submitting}
-            size="lg"
-            className="shrink-0"
-          >
-            {isRunning ? <Loader2 className="animate-spin" /> : <RefreshCw />}
-            {isRunning ? 'Refreshing…' : 'Refresh Everything'}
-          </Button>
+          <div className="flex items-center gap-2 shrink-0">
+            <Button
+              onClick={() => handleRefresh(false)}
+              disabled={isRunning || submitting}
+              size="lg"
+            >
+              {isRunning ? <Loader2 className="animate-spin" /> : <RefreshCw />}
+              {isRunning ? 'Refreshing…' : 'Refresh Everything'}
+            </Button>
+            <Button
+              onClick={() => handleRefresh(true)}
+              disabled={isRunning || submitting}
+              size="lg"
+              variant="secondary"
+              title="Bypass the HTTP cache and re-fetch every URL from scratch. Use after upstream corrections."
+            >
+              Force re-fetch
+            </Button>
+          </div>
         </div>
 
         {/* Idle hint */}
@@ -279,13 +309,16 @@ export function RefreshTab() {
                   <span className="text-xs text-slate-400">· {status.discovery.stage}</span>
                 )}
               </div>
-              <span className="text-xs text-slate-400 font-mono tabular-nums">
-                {stage1Complete
-                  ? `${dBikes} bikes parsed`
-                  : dUrlsTotal > 0
-                  ? `${dUrlsDone}/${dUrlsTotal} articles · ${dBikes} bikes`
-                  : '…'}
-              </span>
+              <div className="flex items-center gap-3">
+                <span className="text-xs text-slate-400 font-mono tabular-nums">
+                  {stage1Complete
+                    ? `${dBikes} bikes parsed`
+                    : dUrlsTotal > 0
+                    ? `${dUrlsDone}/${dUrlsTotal} articles · ${dBikes} bikes`
+                    : '…'}
+                </span>
+                {cacheCounter(status?.discovery)}
+              </div>
             </div>
             <ProgressBar percent={stage1Percent} active={stage1Active} />
           </div>
@@ -307,13 +340,16 @@ export function RefreshTab() {
                   <span className="text-xs text-slate-400 truncate">· {rCurrent}</span>
                 )}
               </div>
-              <span className="text-xs text-slate-400 font-mono tabular-nums">
-                {stage2Complete
-                  ? `${rAdded} reviews added`
-                  : rTotal > 0
-                  ? `${rDone}/${rTotal} bikes · ${rAdded} reviews`
-                  : 'queued'}
-              </span>
+              <div className="flex items-center gap-3">
+                <span className="text-xs text-slate-400 font-mono tabular-nums">
+                  {stage2Complete
+                    ? `${rAdded} reviews added`
+                    : rTotal > 0
+                    ? `${rDone}/${rTotal} bikes · ${rAdded} reviews`
+                    : 'queued'}
+                </span>
+                {cacheCounter(status?.reviews)}
+              </div>
             </div>
             <ProgressBar percent={stage2Percent} active={stage2Active} />
           </div>
@@ -335,13 +371,16 @@ export function RefreshTab() {
                   <span className="text-xs text-slate-400 truncate">· {oCurrent}</span>
                 )}
               </div>
-              <span className="text-xs text-slate-400 font-mono tabular-nums">
-                {stage3Complete
-                  ? `${oTotalAdded} reviews added (BD ${oBikedekho} · ZW ${oZigwheels} · RD ${oReddit})`
-                  : oTotal > 0
-                  ? `${oDone}/${oTotal} bikes · ${oTotalAdded} reviews`
-                  : 'queued'}
-              </span>
+              <div className="flex items-center gap-3">
+                <span className="text-xs text-slate-400 font-mono tabular-nums">
+                  {stage3Complete
+                    ? `${oTotalAdded} reviews added (BD ${oBikedekho} · ZW ${oZigwheels} · RD ${oReddit})`
+                    : oTotal > 0
+                    ? `${oDone}/${oTotal} bikes · ${oTotalAdded} reviews`
+                    : 'queued'}
+                </span>
+                {cacheCounter(status?.other_sources)}
+              </div>
             </div>
             <ProgressBar percent={stage3Percent} active={stage3Active} />
           </div>
@@ -360,13 +399,16 @@ export function RefreshTab() {
                 </Badge>
                 <span className="text-white font-medium">Scraping AutoPunditz posts</span>
               </div>
-              <span className="text-xs text-slate-400 font-mono tabular-nums">
-                {stage4Complete
-                  ? `${apModelRows} model · ${apBrandRows} brand rows`
-                  : apPostsTotal > 0
-                  ? `${apPostsDone}/${apPostsTotal} posts · ${apModelRows + apBrandRows} rows`
-                  : 'queued'}
-              </span>
+              <div className="flex items-center gap-3">
+                <span className="text-xs text-slate-400 font-mono tabular-nums">
+                  {stage4Complete
+                    ? `${apModelRows} model · ${apBrandRows} brand rows`
+                    : apPostsTotal > 0
+                    ? `${apPostsDone}/${apPostsTotal} posts · ${apModelRows + apBrandRows} rows`
+                    : 'queued'}
+                </span>
+                {cacheCounter(status?.autopunditz)}
+              </div>
             </div>
             <ProgressBar percent={stage4Percent} active={stage4Active} />
           </div>
@@ -385,13 +427,16 @@ export function RefreshTab() {
                 </Badge>
                 <span className="text-white font-medium">Fetching FADA retail data</span>
               </div>
-              <span className="text-xs text-slate-400 font-mono tabular-nums">
-                {stage5Complete
-                  ? `${rRows} rows added`
-                  : rPdfTotal > 0
-                  ? `${rPdfDone}/${rPdfTotal} PDFs · ${rRows} rows`
-                  : 'queued'}
-              </span>
+              <div className="flex items-center gap-3">
+                <span className="text-xs text-slate-400 font-mono tabular-nums">
+                  {stage5Complete
+                    ? `${rRows} rows added`
+                    : rPdfTotal > 0
+                    ? `${rPdfDone}/${rPdfTotal} PDFs · ${rRows} rows`
+                    : 'queued'}
+                </span>
+                {cacheCounter(status?.retail)}
+              </div>
             </div>
             <ProgressBar percent={stage5Percent} active={stage5Active} />
           </div>

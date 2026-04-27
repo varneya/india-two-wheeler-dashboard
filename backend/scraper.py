@@ -12,6 +12,7 @@ import time
 import requests
 from bs4 import BeautifulSoup
 
+import url_cache
 from bike_registry import BRANDS
 
 HEADERS = {
@@ -78,8 +79,13 @@ def discover_article_urls() -> list[str]:
 
 
 def fetch_article_text(url: str) -> str | None:
-    resp = _get(url)
-    if not resp:
+    """Fetch and parse a RushLane article. Uses HTTP conditional-GET; returns
+    None when the article hasn't changed since the last successful fetch
+    (caller should treat that the same as 'no new data to insert')."""
+    resp, was_cached = url_cache.conditional_get(url, headers=HEADERS, timeout=15)
+    if was_cached:
+        return None
+    if not resp or resp.status_code != 200:
         return None
 
     soup = BeautifulSoup(resp.text, "html.parser")
@@ -93,13 +99,14 @@ def fetch_article_text(url: str) -> str | None:
 
 
 def scrape_all() -> list[dict]:
-    """Return list of {url, text} dicts for all discoverable articles."""
+    """Return list of {url, text} dicts for all discoverable articles whose
+    body changed since the last refresh. URLs whose content is unchanged are
+    skipped (their data is already in sales_data from the prior run)."""
     urls = discover_article_urls()
     results = []
     for url in urls:
-        print(f"[scraper] Fetching {url}")
         text = fetch_article_text(url)
         if text:
             results.append({"url": url, "text": text})
-        time.sleep(random.uniform(2, 4))
+            time.sleep(random.uniform(2, 4))
     return results

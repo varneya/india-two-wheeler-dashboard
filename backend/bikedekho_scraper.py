@@ -25,6 +25,9 @@ import time
 import requests
 from bs4 import BeautifulSoup
 
+import database
+import url_cache
+
 HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -99,13 +102,10 @@ def scrape_bikedekho_for_bike(bike: dict) -> list[dict]:
     time.sleep(random.uniform(1.0, 2.0))
 
     url = f"{BASE_URL}/{slug}/reviews"
-    try:
-        resp = requests.get(url, headers=HEADERS, timeout=15)
-    except requests.RequestException as e:
-        print(f"[bikedekho] {bike_id}: GET failed: {e}")
+    resp, was_cached = url_cache.conditional_get(url, headers=HEADERS, timeout=15)
+    if was_cached:
         return []
-    if resp.status_code != 200:
-        print(f"[bikedekho] {bike_id}: HTTP {resp.status_code}")
+    if not resp or resp.status_code != 200:
         return []
 
     soup = BeautifulSoup(resp.text, "html.parser")
@@ -120,6 +120,15 @@ def scrape_bikedekho_for_bike(bike: dict) -> list[dict]:
         if parsed and parsed["post_id"] not in out:
             out[parsed["post_id"]] = parsed
 
-    rated = sum(1 for r in out.values() if r["overall_rating"] is not None)
-    print(f"[bikedekho] {bike_id}: {len(out)} reviews ({rated} with ratings)")
-    return list(out.values())
+    items = list(out.values())
+    if items:
+        # Reviews are ordered newest-first; cursor short-circuit keeps us
+        # from re-upserting an unchanged set.
+        newest_id = items[0]["post_id"]
+        cursor = database.get_review_cursor(bike_id, "bikedekho")
+        if cursor == newest_id:
+            return []
+        database.upsert_review_cursor(bike_id, "bikedekho", newest_id)
+    rated = sum(1 for r in items if r["overall_rating"] is not None)
+    print(f"[bikedekho] {bike_id}: {len(items)} reviews ({rated} with ratings)")
+    return items

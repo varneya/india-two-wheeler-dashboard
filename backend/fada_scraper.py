@@ -22,6 +22,8 @@ from urllib.parse import urljoin
 import requests
 from bs4 import BeautifulSoup
 
+import url_cache
+
 try:
     import pdfplumber
     PDFPLUMBER_AVAILABLE = True
@@ -218,15 +220,16 @@ def parse_pdf_2w_oems(pdf_bytes: bytes, target_month: str) -> list[dict]:
 
 
 def fetch_and_parse_pdf(url: str, target_month: str) -> list[dict]:
-    """Download a FADA PDF and return [{oem, units}] for the given month."""
-    try:
-        r = requests.get(url, headers=HEADERS, timeout=30)
-        r.raise_for_status()
-    except requests.RequestException as e:
-        print(f"[fada] download failed {url}: {e}")
+    """Download a FADA PDF and return [{oem, units}] for the given month.
+    Uses HTTP conditional-GET; returns [] when the PDF is unchanged from the
+    previous successful fetch (caller treats that as 'no new rows to insert')."""
+    resp, was_cached = url_cache.conditional_get(url, headers=HEADERS, timeout=30)
+    if was_cached:
+        return []
+    if not resp or resp.status_code != 200:
         return []
     try:
-        return parse_pdf_2w_oems(r.content, target_month)
+        return parse_pdf_2w_oems(resp.content, target_month)
     except Exception as e:
         print(f"[fada] parse failed {url}: {e}")
         return []

@@ -25,6 +25,9 @@ import time
 import requests
 from bs4 import BeautifulSoup
 
+import database
+import url_cache
+
 HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -115,13 +118,13 @@ def _parse_card(card, bike_id: str, fallback_idx: int, page_url: str) -> dict | 
 def scrape_bikewale_for_bike(bike_id: str, slug: str) -> list[dict]:
     """Fetch the BikeWale reviews page once, parse every review card, dedupe
     by review ID. BikeWale's `?page=N` is fake — page 1 holds everything they
-    expose statically."""
+    expose statically. Uses HTTP conditional-GET + a per-bike review_cursor
+    so unchanged pages and pages with no new top review can short-circuit."""
     base = _bikewale_base(slug)
-    try:
-        resp = requests.get(base, headers=HEADERS, timeout=15)
-        resp.raise_for_status()
-    except requests.RequestException as e:
-        print(f"[reviews_scraper] {bike_id}: GET failed: {e}")
+    resp, was_cached = url_cache.conditional_get(base, headers=HEADERS, timeout=15)
+    if was_cached:
+        return []
+    if not resp or resp.status_code != 200:
         return []
 
     soup = BeautifulSoup(resp.text, "html.parser")
@@ -137,6 +140,15 @@ def scrape_bikewale_for_bike(bike_id: str, slug: str) -> list[dict]:
             reviews[parsed["post_id"]] = parsed
 
     out = list(reviews.values())
+    if out:
+        # BikeWale lists newest reviews first. If the topmost matches our
+        # cursor, no new reviews appeared since last refresh — skip the
+        # upsert pass entirely. Otherwise advance the cursor.
+        newest_id = out[0]["post_id"]
+        cursor = database.get_review_cursor(bike_id, "bikewale")
+        if cursor == newest_id:
+            return []
+        database.upsert_review_cursor(bike_id, "bikewale", newest_id)
     rated = sum(1 for r in out if r["overall_rating"] is not None)
     print(f"[reviews_scraper] {bike_id}: {len(out)} reviews ({rated} with ratings)")
     return out
