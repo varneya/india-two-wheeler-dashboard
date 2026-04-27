@@ -24,6 +24,7 @@ import themes_keyword
 import bike_registry
 import bike_catalogue
 import fada_scraper
+import autopunditz_scraper
 
 
 LEGACY_BIKE_ID = "yamaha-xsr-155"
@@ -323,7 +324,7 @@ _refresh_all_lock = threading.Lock()
 _refresh_all_running: bool = False
 _refresh_all_state: dict = {
     "running": False,
-    "stage": "idle",            # idle | discovering | reviews | other_sources | retail | done | error
+    "stage": "idle",            # idle | discovering | reviews | other_sources | autopunditz | retail | done | error
     "started_at": None,
     "finished_at": None,
     "discovery": {
@@ -338,6 +339,10 @@ _refresh_all_state: dict = {
         "bikes_total": 0, "bikes_done": 0,
         "current_bike": None, "current_bike_id": None,
         "bikedekho_added": 0, "zigwheels_added": 0, "reddit_added": 0,
+    },
+    "autopunditz": {            # AutoPunditz brand + aggregate posts
+        "posts_total": 0, "posts_done": 0,
+        "model_rows_added": 0, "brand_rows_added": 0,
     },
     "retail": {                 # FADA monthly retail PDFs
         "pdfs_total": 0, "pdfs_done": 0, "rows_added": 0,
@@ -371,6 +376,10 @@ def _run_refresh_all():
             "bikes_total": 0, "bikes_done": 0,
             "current_bike": None, "current_bike_id": None,
             "bikedekho_added": 0, "zigwheels_added": 0, "reddit_added": 0,
+        }
+        _refresh_all_state["autopunditz"] = {
+            "posts_total": 0, "posts_done": 0,
+            "model_rows_added": 0, "brand_rows_added": 0,
         }
         _refresh_all_state["retail"] = {
             "pdfs_total": 0, "pdfs_done": 0, "rows_added": 0,
@@ -454,7 +463,75 @@ def _run_refresh_all():
             with _refresh_all_lock:
                 _refresh_all_state["other_sources"]["bikes_done"] += 1
 
-        # Stage 4 — FADA monthly retail PDFs (brand-level)
+        # Stage 4 — AutoPunditz: per-brand prose -> model rows in sales_data,
+        # plus monthly aggregate posts -> brand rows in wholesale_brand_sales.
+        # Wrapped in try/except so a sitemap or fetch failure doesn't abort
+        # the whole refresh; FADA still runs.
+        with _refresh_all_lock:
+            _refresh_all_state["stage"] = "autopunditz"
+        try:
+            ap_posts = autopunditz_scraper.discover_post_urls(limit=200)
+            with _refresh_all_lock:
+                _refresh_all_state["autopunditz"]["posts_total"] = len(ap_posts)
+
+            ap_model_rows = 0
+            ap_brand_rows = 0
+
+            for post in ap_posts:
+                try:
+                    text = autopunditz_scraper.fetch_article_text(post["url"])
+                    if not text:
+                        continue
+
+                    if post["kind"] == "brand":
+                        brand_id = post["brand"]
+                        month = post["month"]
+                        bikes = autopunditz_scraper.parse_bikes_from_prose(text, brand_id)
+                        for entry in bikes:
+                            display = f"{bike_registry.BRAND_DISPLAY[entry['brand']]} {entry['canonical']}"
+                            database.upsert_bike(
+                                bike_id=entry["bike_id"],
+                                brand=bike_registry.BRAND_DISPLAY[entry["brand"]],
+                                model=entry["canonical"],
+                                display_name=display,
+                                keywords=entry["keywords"],
+                                bikewale_slug=entry.get("bikewale_slug"),
+                                launch_month=month,
+                            )
+                            database.upsert_sale(
+                                bike_id=entry["bike_id"],
+                                month=month,
+                                units_sold=entry["units"],
+                                source_url=post["url"],
+                                confidence="medium",
+                                source="autopunditz",
+                            )
+                            ap_model_rows += 1
+
+                    elif post["kind"] == "aggregate":
+                        rows = autopunditz_scraper._parse_aggregate_post(
+                            text, post["url"], post["month"]
+                        )
+                        for r in rows:
+                            database.upsert_wholesale_brand_sale(
+                                brand_id=r["brand_id"],
+                                month=r["month"],
+                                units=r["units"],
+                                source_url=r["source_url"],
+                                source="autopunditz",
+                            )
+                            ap_brand_rows += 1
+                except Exception as post_err:
+                    print(f"[refresh-all] autopunditz {post['url']} failed: {post_err}")
+
+                with _refresh_all_lock:
+                    _refresh_all_state["autopunditz"]["posts_done"] += 1
+                    _refresh_all_state["autopunditz"]["model_rows_added"] = ap_model_rows
+                    _refresh_all_state["autopunditz"]["brand_rows_added"] = ap_brand_rows
+        except Exception as ape:
+            print(f"[refresh-all] autopunditz stage failed: {ape}")
+
+        # Stage 5 — FADA monthly retail PDFs (brand-level)
         with _refresh_all_lock:
             _refresh_all_state["stage"] = "retail"
         try:
@@ -528,6 +605,7 @@ def refresh_all_status():
             "discovery": dict(_refresh_all_state["discovery"]),
             "reviews": dict(_refresh_all_state["reviews"]),
             "other_sources": dict(_refresh_all_state.get("other_sources") or {}),
+            "autopunditz": dict(_refresh_all_state.get("autopunditz") or {}),
             "retail": dict(_refresh_all_state.get("retail") or {}),
             "error": _refresh_all_state["error"],
         }

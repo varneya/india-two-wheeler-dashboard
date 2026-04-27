@@ -443,6 +443,16 @@ def build_brand_series_payload(brand_id: str) -> dict:
         r["month"]: int(r["units"])
         for r in database.get_retail_brand_sales(brand_id=brand_id)
     }
+    # AutoPunditz brand totals come from the monthly aggregate posts
+    # (wholesale_brand_sales table). We treat the explicit brand-total as
+    # authoritative for the brand chart — model-level autopunditz coverage
+    # from per-brand posts is partial, so summing it would understate.
+    autopunditz_rows = {
+        r["month"]: int(r["units"])
+        for r in database.get_wholesale_brand_sales(
+            brand_id=brand_id, source="autopunditz"
+        )
+    }
 
     history_payload: list[dict] = []
     for i, m in enumerate(meta):
@@ -453,6 +463,13 @@ def build_brand_series_payload(brand_id: str) -> dict:
             sources.append({
                 "source": "rushlane",
                 "units_sold": rl,
+                "source_url": None,
+            })
+        ap = autopunditz_rows.get(m["month"])
+        if ap is not None:
+            sources.append({
+                "source": "autopunditz",
+                "units_sold": ap,
                 "source_url": None,
             })
         fada = fada_rows.get(m["month"])

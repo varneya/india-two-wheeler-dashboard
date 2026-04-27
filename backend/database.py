@@ -100,6 +100,19 @@ def init_db():
                 scraped_at  TEXT NOT NULL,
                 UNIQUE(brand_id, month, source)
             );
+            -- Brand-level monthly WHOLESALE data (AutoPunditz aggregate posts).
+            -- Same shape as retail_brand_sales but semantically wholesale, so we
+            -- keep them separate to avoid mixing dispatch and registration numbers.
+            CREATE TABLE IF NOT EXISTS wholesale_brand_sales (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                brand_id    TEXT NOT NULL,
+                month       TEXT NOT NULL,
+                units       INTEGER NOT NULL,
+                source      TEXT NOT NULL DEFAULT 'autopunditz',
+                source_url  TEXT,
+                scraped_at  TEXT NOT NULL,
+                UNIQUE(brand_id, month, source)
+            );
             -- Per-review embedding cache. Lookup key is (post_id, model) so a
             -- future model swap doesn't accidentally serve stale vectors.
             CREATE TABLE IF NOT EXISTS review_embeddings (
@@ -585,6 +598,53 @@ def get_retail_brand_sales(brand_id: str | None = None,
     return [dict(r) for r in rows]
 
 
+# ---------------------------------------------------------------------------
+# Wholesale brand sales (AutoPunditz aggregate)
+# ---------------------------------------------------------------------------
+
+def upsert_wholesale_brand_sale(
+    brand_id: str,
+    month: str,
+    units: int,
+    source_url: str | None = None,
+    source: str = "autopunditz",
+):
+    """Upsert a brand-level monthly wholesale row (e.g. from AutoPunditz)."""
+    now = datetime.now(timezone.utc).isoformat()
+    with get_conn() as conn:
+        conn.execute(
+            """INSERT INTO wholesale_brand_sales (brand_id, month, units, source, source_url, scraped_at)
+               VALUES (?, ?, ?, ?, ?, ?)
+               ON CONFLICT(brand_id, month, source) DO UPDATE SET
+                 units=excluded.units,
+                 source_url=excluded.source_url,
+                 scraped_at=excluded.scraped_at""",
+            (brand_id, month, units, source, source_url, now),
+        )
+
+
+def get_wholesale_brand_sales(brand_id: str | None = None,
+                              source: str | None = None) -> list[dict]:
+    """Return wholesale brand rows. Filter by brand_id and/or source."""
+    with get_conn() as conn:
+        clauses = []
+        params: list = []
+        if brand_id:
+            clauses.append("brand_id = ?")
+            params.append(brand_id)
+        if source:
+            clauses.append("source = ?")
+            params.append(source)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        rows = conn.execute(
+            f"""SELECT brand_id, month, units, source, source_url, scraped_at
+                FROM wholesale_brand_sales {where}
+                ORDER BY month ASC""",
+            params,
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
 def get_brand_metrics(brand_id: str) -> dict:
     """Brand-level aggregate metrics (latest / peak / total / months_tracked),
     summed across every bike in the brand from RushLane wholesale rows.
@@ -616,20 +676,22 @@ def get_brand_metrics(brand_id: str) -> dict:
     }
 
 
-def get_wholesale_brand_totals(brand_id: str) -> list[dict]:
-    """Sum model-level wholesale rows up to brand-monthly totals.
-    `brand_id` matches the prefix of bike_id (e.g. 'yamaha' -> 'yamaha-*').
-    Excludes any retail rows (source != 'fada_retail') so we don't mix sources."""
+def get_wholesale_brand_totals(brand_id: str, source: str = "rushlane") -> list[dict]:
+    """Sum model-level wholesale rows up to brand-monthly totals for a single
+    `source` (default 'rushlane'). `brand_id` matches the prefix of bike_id
+    (e.g. 'yamaha' -> 'yamaha-*'). Filtering to one source avoids double-counting
+    when multiple wholesale sources (rushlane, autopunditz) report on the same
+    bike-month."""
     prefix = f"{brand_id}-%"
     with get_conn() as conn:
         rows = conn.execute(
             """SELECT month, SUM(units_sold) AS units
                FROM sales_data
                WHERE bike_id LIKE ?
-                 AND source != 'fada_retail'
+                 AND source = ?
                GROUP BY month
                ORDER BY month ASC""",
-            (prefix,),
+            (prefix, source),
         ).fetchall()
     return [{"month": r["month"], "units": r["units"]} for r in rows]
 
