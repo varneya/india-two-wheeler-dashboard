@@ -169,6 +169,15 @@ def init_db():
                 matched_at TEXT NOT NULL,
                 PRIMARY KEY (video_id, bike_id)
             );
+            -- Per-channel "newest video we've inspected" pointer. Lets the
+            -- YouTube scraper walk a small newest-first window each refresh
+            -- and bail as soon as it hits a video it's already seen, instead
+            -- of re-listing 50 videos per channel every time.
+            CREATE TABLE IF NOT EXISTS youtube_channel_cursor (
+                channel_handle  TEXT PRIMARY KEY,
+                last_video_id   TEXT NOT NULL,
+                last_checked_at TEXT NOT NULL
+            );
         """)
 
         # ------------- Add bike_id columns (idempotent) -------------
@@ -879,6 +888,39 @@ def get_video_transcripts_for_bike(bike_id: str) -> list[dict]:
             (bike_id,),
         ).fetchall()
     return [dict(r) for r in rows]
+
+
+def get_youtube_channel_cursor(channel_handle: str) -> str | None:
+    """Return the newest video_id we've inspected for this channel, or None
+    if we've never refreshed it before."""
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT last_video_id FROM youtube_channel_cursor WHERE channel_handle = ?",
+            (channel_handle,),
+        ).fetchone()
+    return row["last_video_id"] if row else None
+
+
+def upsert_youtube_channel_cursor(channel_handle: str, last_video_id: str):
+    now = datetime.now(timezone.utc).isoformat()
+    with get_conn() as conn:
+        conn.execute(
+            """INSERT INTO youtube_channel_cursor
+                 (channel_handle, last_video_id, last_checked_at)
+               VALUES (?, ?, ?)
+               ON CONFLICT(channel_handle) DO UPDATE SET
+                 last_video_id = excluded.last_video_id,
+                 last_checked_at = excluded.last_checked_at""",
+            (channel_handle, last_video_id, now),
+        )
+
+
+def clear_youtube_channel_cursors() -> int:
+    """Wipe the cursors. Called when refresh-all?force=true so the next
+    refresh re-walks every channel from scratch."""
+    with get_conn() as conn:
+        cur = conn.execute("DELETE FROM youtube_channel_cursor")
+        return cur.rowcount
 
 
 # ---------------------------------------------------------------------------

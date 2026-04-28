@@ -372,7 +372,9 @@ def _run_refresh_all(force: bool = False):
 
     if force:
         cleared = database.clear_url_cache()
-        print(f"[refresh-all] force=true: cleared {cleared} url_cache rows")
+        cleared_cursors = database.clear_youtube_channel_cursors()
+        print(f"[refresh-all] force=true: cleared {cleared} url_cache rows, "
+              f"{cleared_cursors} youtube cursors")
 
     with _refresh_all_lock:
         _refresh_all_state.update({
@@ -595,8 +597,9 @@ def _run_refresh_all(force: bool = False):
                 try:
                     candidates = youtube_scraper.scrape_channel(
                         ch,
-                        video_limit=youtube_scraper.DEFAULT_VIDEO_LIMIT,
                         skip_seen_video=database.video_transcript_exists,
+                        get_cursor=database.get_youtube_channel_cursor,
+                        set_cursor=database.upsert_youtube_channel_cursor,
                     )
                     for v in candidates:
                         database.upsert_video_transcript(

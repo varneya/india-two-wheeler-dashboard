@@ -67,9 +67,15 @@ CHANNELS: list[dict] = [
     {"name": "EVO India",          "handle": "@evoIndia",          "channel_url": "https://www.youtube.com/channel/UCAflTQOHfpuX3tEvN5mkLTg", "subs_estimate":    50_000},
 ]
 
-# Per-refresh cap on videos to inspect per channel. Keeps Stage 6 bounded
-# even on first run (13 channels × 50 videos = 650 candidates).
-DEFAULT_VIDEO_LIMIT = 50
+# Cheap probe: how many videos to list when we have a cursor (i.e. we've
+# refreshed this channel before). 10 is enough for daily-or-faster refresh
+# cadence — most Indian moto channels post < 1 video/day.
+PROBE_LIMIT = 10
+# Catchup cap when probe didn't find the cursor (channel posted > PROBE_LIMIT
+# since last refresh) or this is the first refresh ever for this channel.
+CATCHUP_LIMIT = 50
+# Backwards-compat alias (still referenced by main.py call sites).
+DEFAULT_VIDEO_LIMIT = PROBE_LIMIT
 
 # Cap shadow-row review_text at 4000 chars — videos are denser than text
 # reviews so we keep more, but the embedding model is still 512-token-bound.
@@ -241,38 +247,83 @@ def fetch_transcript(video_id: str) -> tuple[str, str] | None:
 # Top-level scrape
 # ---------------------------------------------------------------------------
 
+def _walk_until_cursor(videos: list[dict], cursor_video_id: str | None) -> list[dict]:
+    """Walk the channel listing newest-first; stop the first time we hit the
+    cursor video_id. Returns the prefix of new videos. If cursor is None
+    (first refresh for this channel) returns everything."""
+    out: list[dict] = []
+    for v in videos:
+        if cursor_video_id and v["video_id"] == cursor_video_id:
+            break
+        out.append(v)
+    return out
+
+
 def scrape_channel(
     channel: dict,
-    video_limit: int = DEFAULT_VIDEO_LIMIT,
     skip_seen_video: callable = None,
+    get_cursor: callable = None,
+    set_cursor: callable = None,
 ) -> list[dict]:
-    """Return [{video_id, channel_handle, channel_name, video_url, title,
-    description, duration_s, published_at, transcript, language,
-    matched_bikes}] for every video on this channel that:
-      - matches at least one catalogued bike via title/description, AND
-      - has English auto-captions available.
+    """Return new candidate videos for this channel. Fast path: when a cursor
+    exists and the channel hasn't posted since, this returns [] after a single
+    cheap PROBE_LIMIT-sized listing call.
 
-    `skip_seen_video(video_id) -> bool` lets callers avoid re-fetching
-    transcripts already in DB — pass database.video_transcript_exists."""
+    Two-phase walk:
+      1. Probe with PROBE_LIMIT (cheap) — if cursor is in the window, only
+         the prefix above it is "new", we're done.
+      2. If probe didn't find cursor (channel posted >PROBE_LIMIT new videos
+         OR first refresh ever), do a CATCHUP_LIMIT-sized listing.
+
+    `skip_seen_video(video_id) -> bool` is a fallback de-dup so we never
+    re-fetch a transcript even if cursor logic glitches.
+    `get_cursor(handle) -> last_video_id | None` and
+    `set_cursor(handle, video_id)` plug into the youtube_channel_cursor
+    table. Both optional — when omitted, scraper degrades to its old
+    full-listing behavior, useful for ad-hoc backfills.
+    """
     handle = channel["handle"]
     name = channel["name"]
     channel_url = channel["channel_url"]
-    print(f"[youtube] {name} ({handle}): listing videos...")
-    videos = list_channel_videos(channel_url, limit=video_limit)
-    print(f"[youtube] {name}: {len(videos)} videos found")
+
+    cursor = get_cursor(handle) if get_cursor else None
+
+    # Phase 1: cheap probe. Most refreshes terminate here.
+    videos = list_channel_videos(channel_url, limit=PROBE_LIMIT)
+    new_videos = _walk_until_cursor(videos, cursor)
+
+    if cursor is None and new_videos and len(new_videos) == len(videos):
+        # First refresh ever — pull a deeper window so we backfill history,
+        # not just the latest 10.
+        videos = list_channel_videos(channel_url, limit=CATCHUP_LIMIT)
+        new_videos = _walk_until_cursor(videos, cursor)
+    elif cursor is not None and len(new_videos) == len(videos) and len(videos) >= PROBE_LIMIT:
+        # Probe was full of "new" videos but didn't hit the cursor — channel
+        # posted more than PROBE_LIMIT since last refresh. Catch up.
+        print(f"[youtube] {name}: probe full, expanding to {CATCHUP_LIMIT}")
+        videos = list_channel_videos(channel_url, limit=CATCHUP_LIMIT)
+        new_videos = _walk_until_cursor(videos, cursor)
+
+    if cursor and not new_videos:
+        # Fastest path: cursor matched the very newest video.
+        print(f"[youtube] {name}: up-to-date (cursor at {cursor[:11]}…)")
+        return []
+
+    print(f"[youtube] {name}: {len(new_videos)} new since last refresh "
+          f"(window={len(videos)}, cursor={'set' if cursor else 'first run'})")
 
     out: list[dict] = []
-    for v in videos:
-        # Filter 1: bike-keyword match against title + description
+    for v in new_videos:
+        # Filter 1: bike-keyword + brand-confirmation match
         matches = match_bikes_in_text(v["title"], v.get("description") or "")
         if not matches:
             continue
 
-        # Filter 2: skip videos we've already transcribed
+        # Filter 2: belt-and-braces — skip videos already transcribed.
         if skip_seen_video and skip_seen_video(v["video_id"]):
             continue
 
-        # Filter 3: English transcript must be available
+        # Filter 3: English transcript required
         result = fetch_transcript(v["video_id"])
         if not result:
             continue
@@ -284,7 +335,7 @@ def scrape_channel(
             "channel_name": name,
             "video_url": v["url"],
             "title": v["title"],
-            "description": (v.get("description") or "")[:1000],  # cap blob
+            "description": (v.get("description") or "")[:1000],
             "duration_s": v.get("duration_s"),
             "published_at": v.get("upload_date"),
             "transcript": transcript,
@@ -292,18 +343,23 @@ def scrape_channel(
             "matched_bikes": matches,
         })
 
-        # Polite delay so we don't trigger YouTube IP throttling. Transcripts
-        # is a separate endpoint from yt-dlp listing; ~1s/video is the
-        # conservative default per the youtube-transcript-api README.
+        # Polite delay between transcript fetches.
         time.sleep(1.0)
 
-    print(f"[youtube] {name}: {len(out)} kept ({len(videos) - len(out)} filtered/skipped)")
+    # Advance cursor to the newest video we LISTED (not just the newest we
+    # processed) — that way next refresh starts from the same position even
+    # if some videos got filtered (no bike match / no transcript).
+    if videos and set_cursor:
+        set_cursor(handle, videos[0]["video_id"])
+
+    print(f"[youtube] {name}: {len(out)} kept of {len(new_videos)} new")
     return out
 
 
 def scrape_all_channels(
-    video_limit: int = DEFAULT_VIDEO_LIMIT,
     skip_seen_video: callable = None,
+    get_cursor: callable = None,
+    set_cursor: callable = None,
 ) -> list[dict]:
     """Iterate the CHANNELS registry; return a flat list of candidate videos
     ready for upsert. Each channel wrapped in try/except — one bad channel
@@ -311,8 +367,12 @@ def scrape_all_channels(
     out: list[dict] = []
     for ch in CHANNELS:
         try:
-            out.extend(scrape_channel(ch, video_limit=video_limit,
-                                      skip_seen_video=skip_seen_video))
+            out.extend(scrape_channel(
+                ch,
+                skip_seen_video=skip_seen_video,
+                get_cursor=get_cursor,
+                set_cursor=set_cursor,
+            ))
         except Exception as e:
             print(f"[youtube] {ch['handle']} channel scrape failed: {e}")
     return out
