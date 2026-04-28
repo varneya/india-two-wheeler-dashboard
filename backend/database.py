@@ -11,6 +11,44 @@ DB_PATH = Path(__file__).parent / "sales.db"
 LEGACY_BIKE_ID = "yamaha-xsr-155"
 
 
+# Industry-standard segment seed. cc_min/cc_max define the band; the
+# matching body_style (commuter, sports, naked, ...) determines which
+# segment a variant lands in. Used by the Owner Insights "compare with
+# segment peers" filter and any future segment-level aggregation.
+# Loosely follows BikeWale's body-style nav + SIAM's cc bands.
+_SEGMENT_SEED = [
+    # Commuters
+    {"segment_id": "commuter-100-125",        "display_name": "100-125cc Commuter",        "body_style": "commuter",       "cc_min": 100, "cc_max": 125, "sort_order": 10},
+    {"segment_id": "commuter-125-150",        "display_name": "125-150cc Commuter",        "body_style": "commuter",       "cc_min": 125, "cc_max": 150, "sort_order": 20},
+    {"segment_id": "commuter-premium-150-200","display_name": "150-200cc Premium Commuter","body_style": "commuter",       "cc_min": 150, "cc_max": 200, "sort_order": 30},
+    # Sports (full fairing)
+    {"segment_id": "sports-150-300",          "display_name": "150-300cc Sports",          "body_style": "sports",         "cc_min": 150, "cc_max": 300, "sort_order": 40},
+    {"segment_id": "sports-300-500",          "display_name": "300-500cc Sports",          "body_style": "sports",         "cc_min": 300, "cc_max": 500, "sort_order": 50},
+    {"segment_id": "sports-500+",             "display_name": "500cc+ Sports",             "body_style": "sports",         "cc_min": 500, "cc_max": None,"sort_order": 60},
+    # Naked / streetfighter
+    {"segment_id": "naked-150-300",           "display_name": "150-300cc Naked",           "body_style": "naked",          "cc_min": 150, "cc_max": 300, "sort_order": 70},
+    {"segment_id": "naked-300-500",           "display_name": "300-500cc Naked",           "body_style": "naked",          "cc_min": 300, "cc_max": 500, "sort_order": 80},
+    {"segment_id": "naked-500+",              "display_name": "500cc+ Naked",              "body_style": "naked",          "cc_min": 500, "cc_max": None,"sort_order": 90},
+    # Modern Classic / Retro
+    {"segment_id": "modern-classic-350",      "display_name": "Modern Classic (300-400cc)","body_style": "modern-classic", "cc_min": 300, "cc_max": 400, "sort_order": 100},
+    {"segment_id": "modern-classic-500+",     "display_name": "Modern Classic (500cc+)",   "body_style": "modern-classic", "cc_min": 500, "cc_max": None,"sort_order": 110},
+    # Adventure / ADV
+    {"segment_id": "adventure-200-400",       "display_name": "Adventure (200-400cc)",     "body_style": "adventure",      "cc_min": 200, "cc_max": 400, "sort_order": 120},
+    {"segment_id": "adventure-500+",          "display_name": "Adventure (500cc+)",        "body_style": "adventure",      "cc_min": 500, "cc_max": None,"sort_order": 130},
+    # Cruiser
+    {"segment_id": "cruiser-150-300",         "display_name": "150-300cc Cruiser",         "body_style": "cruiser",        "cc_min": 150, "cc_max": 300, "sort_order": 140},
+    {"segment_id": "cruiser-350+",            "display_name": "350cc+ Cruiser",            "body_style": "cruiser",        "cc_min": 350, "cc_max": None,"sort_order": 150},
+    # Scooters (ICE)
+    {"segment_id": "scooter-100-125",         "display_name": "100-125cc Scooter",         "body_style": "scooter",        "cc_min": 100, "cc_max": 125, "sort_order": 160},
+    {"segment_id": "scooter-125-200",         "display_name": "125-200cc Scooter",         "body_style": "scooter",        "cc_min": 125, "cc_max": 200, "sort_order": 170},
+    # Electric
+    {"segment_id": "e-scooter",               "display_name": "Electric Scooter",          "body_style": "e-scooter",      "cc_min": None,"cc_max": None,"sort_order": 180},
+    {"segment_id": "e-bike",                  "display_name": "Electric Motorcycle",       "body_style": "e-bike",         "cc_min": None,"cc_max": None,"sort_order": 190},
+    # Misc / mopeds (XL100, etc.)
+    {"segment_id": "moped",                   "display_name": "Moped",                     "body_style": "moped",          "cc_min": 50,  "cc_max": 110, "sort_order": 200},
+]
+
+
 def get_conn() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
@@ -175,6 +213,51 @@ def init_db():
                 last_video_id   TEXT NOT NULL,
                 last_checked_at TEXT NOT NULL
             );
+
+            -- ----------------------------------------------------------------
+            -- Variant-level catalogue (Phase 1 of the BikeWale-as-base refactor)
+            -- ----------------------------------------------------------------
+            -- bike_segments: hand-seeded industry-standard segments (cc x body
+            -- style grid). Stable across refreshes; populated once on init.
+            -- Lets the Owner Insights tab compare a bike's reviews against
+            -- siblings in the same segment.
+            CREATE TABLE IF NOT EXISTS bike_segments (
+                segment_id   TEXT PRIMARY KEY,
+                display_name TEXT NOT NULL,
+                body_style   TEXT NOT NULL,
+                cc_min       INTEGER,
+                cc_max       INTEGER,
+                sort_order   INTEGER NOT NULL DEFAULT 100
+            );
+
+            -- bike_variants: every variant currently on sale in India,
+            -- scraped from BikeWale. Rolls up to a parent_model_id (which
+            -- matches the existing `bikes.id` scheme so today's sales data
+            -- attaches without rewrites). One row per variant — Pulsar 150,
+            -- Pulsar N160, Pulsar N250 are three rows that all roll up to
+            -- 'bajaj-pulsar'.
+            CREATE TABLE IF NOT EXISTS bike_variants (
+                variant_id        TEXT PRIMARY KEY,
+                parent_model_id   TEXT NOT NULL,
+                brand_id          TEXT NOT NULL,
+                segment_id        TEXT,
+                display_name      TEXT NOT NULL,
+                displacement_cc   INTEGER,
+                price_onroad      INTEGER,
+                bikewale_slug     TEXT NOT NULL,
+                bikedekho_slug    TEXT,
+                image_url         TEXT,
+                status            TEXT NOT NULL DEFAULT 'on_sale',
+                launch_year       INTEGER,
+                discovered_at     TEXT NOT NULL,
+                last_seen_at      TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_variants_parent
+                ON bike_variants(parent_model_id);
+            CREATE INDEX IF NOT EXISTS idx_variants_segment
+                ON bike_variants(segment_id);
+            CREATE INDEX IF NOT EXISTS idx_variants_brand
+                ON bike_variants(brand_id);
         """)
 
         # ------------- Add bike_id columns (idempotent) -------------
@@ -291,6 +374,22 @@ def init_db():
                     """)
                 conn.execute("DROP TABLE video_transcripts_old")
                 print("[migrate] rebuilt video_transcripts: transcript nullable + transcript_status column")
+
+        # ------------- Seed bike_segments (idempotent INSERT OR IGNORE) ----
+        # Hand-curated industry-standard segments grouped by cc band x body
+        # style. Sort order keeps related segments together (commuters →
+        # sports → naked → modern-classic → adventure → cruiser → scooters
+        # → electric).
+        for s in _SEGMENT_SEED:
+            conn.execute(
+                """INSERT OR IGNORE INTO bike_segments
+                     (segment_id, display_name, body_style, cc_min, cc_max, sort_order)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (
+                    s["segment_id"], s["display_name"], s["body_style"],
+                    s.get("cc_min"), s.get("cc_max"), s["sort_order"],
+                ),
+            )
 
         # ------------- Drop YouTube shadow rows from `reviews` -------------
         # YouTube transcripts are no longer shadow-inserted into `reviews`.
@@ -1206,3 +1305,97 @@ def cache_embeddings(
             "  embedding = excluded.embedding, dim = excluded.dim, cached_at = excluded.cached_at",
             [(pid, model, blob, dim, now) for pid, blob in zip(post_ids, embeddings_bytes)],
         )
+
+
+# ---------------------------------------------------------------------------
+# Bike segments + variants (BikeWale-as-base catalogue)
+# ---------------------------------------------------------------------------
+
+def list_segments() -> list[dict]:
+    """All segments in display order. Used for filter dropdowns and to
+    drive the 'compare with segment peers' filter on Owner Insights."""
+    with get_conn() as conn:
+        rows = conn.execute(
+            """SELECT segment_id, display_name, body_style, cc_min, cc_max, sort_order
+               FROM bike_segments
+               ORDER BY sort_order ASC, display_name ASC"""
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def upsert_bike_variant(
+    variant_id: str,
+    parent_model_id: str,
+    brand_id: str,
+    display_name: str,
+    bikewale_slug: str,
+    segment_id: str | None = None,
+    displacement_cc: int | None = None,
+    price_onroad: int | None = None,
+    bikedekho_slug: str | None = None,
+    image_url: str | None = None,
+    status: str = "on_sale",
+    launch_year: int | None = None,
+):
+    """Upsert a variant. last_seen_at is bumped on every call so we can
+    later detect rows that fell off BikeWale (mark as discontinued)."""
+    now = datetime.now(timezone.utc).isoformat()
+    with get_conn() as conn:
+        conn.execute(
+            """INSERT INTO bike_variants
+                 (variant_id, parent_model_id, brand_id, segment_id, display_name,
+                  displacement_cc, price_onroad, bikewale_slug, bikedekho_slug,
+                  image_url, status, launch_year, discovered_at, last_seen_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(variant_id) DO UPDATE SET
+                 parent_model_id = excluded.parent_model_id,
+                 brand_id = excluded.brand_id,
+                 segment_id = COALESCE(excluded.segment_id, bike_variants.segment_id),
+                 display_name = excluded.display_name,
+                 displacement_cc = COALESCE(excluded.displacement_cc, bike_variants.displacement_cc),
+                 price_onroad = COALESCE(excluded.price_onroad, bike_variants.price_onroad),
+                 bikewale_slug = excluded.bikewale_slug,
+                 bikedekho_slug = COALESCE(excluded.bikedekho_slug, bike_variants.bikedekho_slug),
+                 image_url = COALESCE(excluded.image_url, bike_variants.image_url),
+                 status = excluded.status,
+                 launch_year = COALESCE(excluded.launch_year, bike_variants.launch_year),
+                 last_seen_at = excluded.last_seen_at""",
+            (variant_id, parent_model_id, brand_id, segment_id, display_name,
+             displacement_cc, price_onroad, bikewale_slug, bikedekho_slug,
+             image_url, status, launch_year, now, now),
+        )
+
+
+def list_variants(
+    parent_model_id: str | None = None,
+    segment_id: str | None = None,
+    brand_id: str | None = None,
+    on_sale_only: bool = True,
+) -> list[dict]:
+    """List variants with optional filters. Used by per-bike views (filter
+    by parent_model_id) and segment-peer comparison (filter by segment_id)."""
+    clauses: list[str] = []
+    params: list = []
+    if parent_model_id:
+        clauses.append("parent_model_id = ?")
+        params.append(parent_model_id)
+    if segment_id:
+        clauses.append("segment_id = ?")
+        params.append(segment_id)
+    if brand_id:
+        clauses.append("brand_id = ?")
+        params.append(brand_id)
+    if on_sale_only:
+        clauses.append("status = 'on_sale'")
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    with get_conn() as conn:
+        rows = conn.execute(
+            f"""SELECT variant_id, parent_model_id, brand_id, segment_id,
+                       display_name, displacement_cc, price_onroad,
+                       bikewale_slug, bikedekho_slug, image_url, status,
+                       launch_year, discovered_at, last_seen_at
+               FROM bike_variants {where}
+               ORDER BY brand_id, parent_model_id, displacement_cc""",
+            params,
+        ).fetchall()
+    return [dict(r) for r in rows]

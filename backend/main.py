@@ -971,6 +971,35 @@ def get_brand_forecast_status(brand_id: str):
 # Influencer Reviews tab — standalone listing, not bike-scoped.
 # ===========================================================================
 
+# ===========================================================================
+# Bike segments + variants (BikeWale-as-base catalogue)
+# ===========================================================================
+
+@app.get("/api/segments")
+def list_bike_segments():
+    """Industry-standard segments. Used by the Owner Insights segment-peer
+    filter and any segment-level rollup view."""
+    return database.list_segments()
+
+
+@app.get("/api/variants")
+def list_bike_variants(
+    parent_model_id: str | None = None,
+    segment_id: str | None = None,
+    brand_id: str | None = None,
+    on_sale_only: bool = True,
+):
+    """List variants from the BikeWale-derived catalogue. Filterable by
+    parent model (e.g. 'bajaj-pulsar' returns N160, NS200, 150, etc.),
+    segment (e.g. 'naked-300-500'), and brand."""
+    return database.list_variants(
+        parent_model_id=parent_model_id,
+        segment_id=segment_id,
+        brand_id=brand_id,
+        on_sale_only=on_sale_only,
+    )
+
+
 @app.get("/api/influencer-channels")
 def list_influencer_channels():
     """Return the curated channels we scrape with their per-channel video
