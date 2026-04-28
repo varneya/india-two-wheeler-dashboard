@@ -97,29 +97,6 @@ export function useSalesData({ bikeId, brandId }: Args) {
   })
 
   // ---------------------------------------------------------------------------
-  // Forecast cache probe — turn the layer on if we've already fit recently
-  // ---------------------------------------------------------------------------
-  useEffect(() => {
-    if (!scopeKey) return
-    let cancelled = false
-    const probe = isBrandMode
-      ? fetchBrandForecast(brandId!, { horizon })
-      : fetchForecast(bikeId!, { horizon })
-    probe
-      .then(r => {
-        if (cancelled) return
-        if ('pending' in r) return
-        qc.setQueryData(['forecast', scopeKey, horizon], r)
-        setShowForecast(true)
-      })
-      .catch(() => {})
-    return () => {
-      cancelled = true
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [scopeKey, horizon])
-
-  // ---------------------------------------------------------------------------
   // Forecast (lazy) — bike or brand
   // ---------------------------------------------------------------------------
   const forecastQuery = useQuery({

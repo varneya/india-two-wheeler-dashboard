@@ -114,8 +114,10 @@ export function MetricsCards({ metrics, sales, launchMonth, forecast }: Props) {
       const sign = d >= 0 ? '+' : ''
       parts.push(`${sign}${Math.round(d).toLocaleString()} vs latest`)
     }
-    parts.push(`${Math.round(forecast!.interval_width * 100)}% CI ` +
-      `${Math.round(nextForecast.yhat_lower).toLocaleString()}–${Math.round(nextForecast.yhat_upper).toLocaleString()}`)
+    parts.push(
+      `range ${Math.round(nextForecast.yhat_lower).toLocaleString()}–` +
+      `${Math.round(nextForecast.yhat_upper).toLocaleString()}`,
+    )
     nextForecastSub = parts.join(' · ')
   }
 

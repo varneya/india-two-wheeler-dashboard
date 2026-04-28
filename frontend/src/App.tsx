@@ -48,17 +48,16 @@ function brandIdFromBikeId(bikeId: string): string | null {
 
 const queryClient = new QueryClient()
 
-type Tab = 'sales' | 'insights' | 'compare' | 'refresh' | 'setup'
+type Tab = 'sales' | 'insights' | 'refresh' | 'setup'
 
 const TAB_LABELS: Record<Tab, string> = {
   sales: 'Sales Data',
   insights: 'Owner Insights',
-  compare: 'Compare',
   refresh: 'Data Refresh',
   setup: 'Setup',
 }
 
-const TAB_ORDER: Tab[] = ['sales', 'insights', 'compare', 'refresh', 'setup']
+const TAB_ORDER: Tab[] = ['sales', 'insights', 'refresh', 'setup']
 
 function ThemeToggle() {
   const { theme, toggle } = useTheme()
@@ -298,6 +297,22 @@ function Dashboard() {
                     <StatusBanner metrics={metrics} />
                   </>
                 )}
+
+                {/* Compare section — used to be a separate tab. Embedded
+                    here so visitors don't have to switch contexts to put
+                    this bike against the rest of the catalogue. */}
+                <div className="mt-4 pt-6 border-t border-border/40">
+                  <div className="mb-4">
+                    <h2 className="text-lg font-semibold text-foreground">
+                      How does this compare?
+                    </h2>
+                    <p className="text-sm text-muted-foreground mt-1">
+                      Pick another bike (or a few) to overlay them on the
+                      same chart and see where this one sits.
+                    </p>
+                  </div>
+                  <CompareTab />
+                </div>
               </>
             )}
           </>
@@ -315,9 +330,6 @@ function Dashboard() {
             <InsightsTab />
           )
         )}
-
-        {/* Compare tab */}
-        {tab === 'compare' && <CompareTab />}
 
         {/* Data Refresh tab */}
         {tab === 'refresh' && <RefreshTab />}

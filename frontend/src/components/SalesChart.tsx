@@ -165,7 +165,6 @@ export function SalesChart({ series, forecast, displayName, secondarySeries }: P
 
   const rows = buildRows(series, forecast, secondarySeries)
   const todayLabel = forecast ? findTodayLabel(rows) : null
-  const intervalPct = forecast ? Math.round(forecast.interval_width * 100) : 95
   const hasMultiSourceMonths = series.history.some(h => h.n_sources >= 2)
 
   function onBarClick(payload: unknown) {
@@ -207,12 +206,12 @@ export function SalesChart({ series, forecast, displayName, secondarySeries }: P
                 if (value == null) return ['—', name]
                 const num = typeof value === 'number' ? Math.round(value).toLocaleString() : value
                 const labels: Record<string, string> = {
-                  observed: 'Observed',
-                  imputed: 'Imputed',
-                  avg: '3-mo rolling avg',
+                  observed: 'Real data',
+                  imputed: 'Estimated',
+                  avg: '3-month average',
                   yhat: 'Forecast',
-                  bandBase: `${intervalPct}% CI lower`,
-                  bandHeight: 'CI height',
+                  bandBase: 'Forecast range (low)',
+                  bandHeight: 'Forecast range',
                 }
                 return [num, labels[String(name)] ?? name]
               }}
@@ -221,11 +220,11 @@ export function SalesChart({ series, forecast, displayName, secondarySeries }: P
               wrapperStyle={{ color: '#94a3b8', fontSize: 12 }}
               formatter={v => {
                 const m: Record<string, string> = {
-                  observed: 'Observed',
-                  imputed: 'Imputed',
-                  avg: '3-mo Rolling Avg',
+                  observed: 'Real data',
+                  imputed: 'Estimated',
+                  avg: '3-month average',
                   yhat: 'Forecast',
-                  bandHeight: `${intervalPct}% CI`,
+                  bandHeight: 'Forecast range',
                   secondary: secondarySeries?.name ?? 'Secondary',
                 }
                 return m[v as string] ?? v
