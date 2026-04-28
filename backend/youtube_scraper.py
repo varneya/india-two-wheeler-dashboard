@@ -158,6 +158,56 @@ def _make_keyword_regex(keywords: list[str]) -> re.Pattern:
     return re.compile(pattern, re.IGNORECASE)
 
 
+# Broader brand list including Indian motorcycle brands NOT in our
+# bike_catalogue (BSA, Yezdi, Jawa) and a few imports that occasionally
+# appear in these channels. Used by `is_bike_content` to admit videos
+# whose subject isn't a tracked-catalogue model. The catalogue match in
+# `match_bikes_in_text` is still run on top to TAG videos with bike_ids
+# when possible, but it's no longer a filter.
+EXTRA_MOTORCYCLE_BRANDS = (
+    "bsa", "yezdi", "jawa", "ola electric", "ola s1", "ather", "tork",
+    "hero electric", "tvs iqube", "bgauss", "ultraviolette",
+    "indian motorcycle", "norton", "mv agusta", "polaris", "moto guzzi",
+)
+
+# Generic motorcycle nouns. A video that mentions "motorcycle" or
+# "scooter" anywhere in its title/description is a bike-content video
+# even if it doesn't name a specific brand we track.
+MOTORCYCLE_KEYWORDS = (
+    "motorcycle", "motorcycles", "motorbike", "two-wheeler", "two wheeler",
+    "2-wheeler", "2 wheeler", "scooter", "scooters", "moped", "mopeds",
+    "cruiser", "sportbike", "superbike", "naked bike", "adventure bike",
+    "scrambler", "cafe racer", "dirt bike", "off-road bike",
+    "electric scooter", "ev scooter", "ev bike", "ride review",
+    "bike review", "first ride",
+)
+
+
+def is_bike_content(title: str, description: str) -> bool:
+    """True when the title/description mentions ANY motorcycle brand
+    (catalogued or not) or generic motorcycle keywords. Used as a
+    bike-vs-car filter for the channels in CHANNELS — most have ≥80%
+    bike content but also publish car / industry-news videos we don't
+    care about."""
+    text = f"{title}\n{description or ''}".lower()
+    # Catalogue brand names (display + slug forms)
+    for bid, meta in bike_catalogue.BRANDS.items():
+        display = meta.get("display", bid).lower()
+        if display in text:
+            return True
+        if bid.replace("-", " ") in text or bid.replace("-", "") in text:
+            return True
+    # Non-catalogue Indian motorcycle brands
+    for needle in EXTRA_MOTORCYCLE_BRANDS:
+        if needle in text:
+            return True
+    # Generic motorcycle nouns
+    for needle in MOTORCYCLE_KEYWORDS:
+        if needle in text:
+            return True
+    return False
+
+
 def match_bikes_in_text(title: str, description: str) -> list[dict]:
     """Return [{brand_id, canonical, bike_id, matched_keyword}] for every
     catalogue bike whose keywords appear in title+description. Empty list
@@ -208,26 +258,40 @@ def match_bikes_in_text(title: str, description: str) -> list[dict]:
 # Transcript fetch
 # ---------------------------------------------------------------------------
 
-def fetch_transcript(video_id: str) -> tuple[str, str] | None:
-    """Pull English captions for `video_id`. Returns (text, language) or None
-    on no-captions / disabled / unavailable. Hindi-primary channels naturally
-    drop out here — their videos rarely have en captions."""
+# Status values mirrored to the database. The scraper returns one of these
+# alongside the (maybe-None) transcript text so callers can distinguish
+# "video has no captions" (don't retry) from "we got rate-limited"
+# (do retry next refresh).
+TRANSCRIPT_OK = "ok"
+TRANSCRIPT_NONE = "no_captions"     # captions disabled / not available
+TRANSCRIPT_BLOCKED = "rate_limited"  # IP block, network error, etc.
+
+
+def fetch_transcript(video_id: str) -> tuple[str | None, str | None, str]:
+    """Return (transcript_text, language, status). status ∈ TRANSCRIPT_OK
+    | TRANSCRIPT_NONE | TRANSCRIPT_BLOCKED. Hindi-primary channels naturally
+    fall into TRANSCRIPT_NONE for non-English videos.
+
+    The shape changed from "Optional[(text, lang)]" so the caller can keep
+    the row even when the transcript itself is missing — letting users see
+    metadata for blocked videos and us retry them on the next refresh."""
     if not YT_TRANSCRIPT_AVAILABLE:
         raise RuntimeError("youtube-transcript-api not installed.")
     try:
         api = YouTubeTranscriptApi()
         transcript = api.fetch(video_id, languages=["en"])
     except (TranscriptsDisabled, NoTranscriptFound, VideoUnavailable):
-        return None
+        return None, None, TRANSCRIPT_NONE
     except Exception as e:
-        # Catch network errors, IP throttling, format changes — skip gracefully
+        # Network / IP throttle / unknown error — treat as transient so the
+        # next refresh retries instead of marking the video as never-having
+        # captions.
         print(f"[youtube] transcript fetch failed for {video_id}: {e}")
-        return None
+        return None, None, TRANSCRIPT_BLOCKED
 
     parts: list[str] = []
     lang = "en"
     try:
-        # FetchedTranscript supports iteration over snippet objects
         for snippet in transcript:
             text = getattr(snippet, "text", None) or (snippet.get("text") if isinstance(snippet, dict) else None)
             if text:
@@ -235,12 +299,12 @@ def fetch_transcript(video_id: str) -> tuple[str, str] | None:
         lang = getattr(transcript, "language_code", None) or "en"
     except Exception as e:
         print(f"[youtube] transcript decode failed for {video_id}: {e}")
-        return None
+        return None, None, TRANSCRIPT_BLOCKED
 
     full = re.sub(r"\s+", " ", " ".join(parts)).strip()
     if not full:
-        return None
-    return full, lang
+        return None, None, TRANSCRIPT_NONE
+    return full, lang, TRANSCRIPT_OK
 
 
 # ---------------------------------------------------------------------------
@@ -314,41 +378,50 @@ def scrape_channel(
 
     out: list[dict] = []
     for v in new_videos:
-        # Filter 1: bike-keyword + brand-confirmation match
-        matches = match_bikes_in_text(v["title"], v.get("description") or "")
-        if not matches:
+        title = v["title"]
+        desc = v.get("description") or ""
+
+        # Filter 1: keep ANY bike-related video — the catalogue match is
+        # now used only for tagging (which bike(s) is this video about?),
+        # not as a hard filter. Videos without a catalogue tag still get
+        # stored so the standalone Influencer Reviews tab can list them.
+        if not is_bike_content(title, desc):
             continue
 
-        # Filter 2: belt-and-braces — skip videos already transcribed.
+        # Filter 2: skip videos we've already SUCCESSFULLY transcribed.
+        # (Metadata-only pending rows return False here so they retry.)
         if skip_seen_video and skip_seen_video(v["video_id"]):
             continue
 
-        # Filter 3: English transcript required
-        result = fetch_transcript(v["video_id"])
-        if not result:
-            continue
-        transcript, language = result
+        # Best-effort bike tagging — empty list is fine, it just means the
+        # video is bike content but doesn't match a catalogue model.
+        matched = match_bikes_in_text(title, desc)
+
+        # Transcript fetch (may fail with rate_limit; we still keep the
+        # video metadata so it shows up in the listing and gets retried).
+        transcript, language, status = fetch_transcript(v["video_id"])
 
         out.append({
             "video_id": v["video_id"],
             "channel_handle": handle,
             "channel_name": name,
             "video_url": v["url"],
-            "title": v["title"],
-            "description": (v.get("description") or "")[:1000],
+            "title": title,
+            "description": desc[:1000],
             "duration_s": v.get("duration_s"),
             "published_at": v.get("upload_date"),
             "transcript": transcript,
             "language": language,
-            "matched_bikes": matches,
+            "transcript_status": status,
+            "matched_bikes": matched,
         })
 
         # Polite delay between transcript fetches.
         time.sleep(1.0)
 
     # Advance cursor to the newest video we LISTED (not just the newest we
-    # processed) — that way next refresh starts from the same position even
-    # if some videos got filtered (no bike match / no transcript).
+    # processed) — that way next refresh starts from the same position
+    # even if some videos got filtered (non-bike content).
     if videos and set_cursor:
         set_cursor(handle, videos[0]["video_id"])
 

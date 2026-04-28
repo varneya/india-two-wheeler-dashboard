@@ -146,17 +146,19 @@ def init_db():
             -- A shadow row in the `reviews` table per (video, bike) feeds the
             -- existing themes/embedding pipeline for free.
             CREATE TABLE IF NOT EXISTS video_transcripts (
-                video_id       TEXT PRIMARY KEY,
-                channel_handle TEXT NOT NULL,
-                channel_name   TEXT NOT NULL,
-                video_url      TEXT NOT NULL,
-                title          TEXT NOT NULL,
-                description    TEXT,
-                duration_s     INTEGER,
-                published_at   TEXT,
-                transcript     TEXT NOT NULL,
-                language       TEXT,
-                fetched_at     TEXT NOT NULL
+                video_id          TEXT PRIMARY KEY,
+                channel_handle    TEXT NOT NULL,
+                channel_name      TEXT NOT NULL,
+                video_url         TEXT NOT NULL,
+                title             TEXT NOT NULL,
+                description       TEXT,
+                duration_s        INTEGER,
+                published_at      TEXT,
+                transcript        TEXT,
+                language          TEXT,
+                -- 'ok' | 'rate_limited' | 'no_captions' | 'pending'
+                transcript_status TEXT NOT NULL DEFAULT 'ok',
+                fetched_at        TEXT NOT NULL
             );
             CREATE TABLE IF NOT EXISTS video_bike_match (
                 video_id  TEXT NOT NULL,
@@ -231,6 +233,64 @@ def init_db():
         if _table_exists(conn, "retail_brand_sales"):
             conn.execute("DROP TABLE retail_brand_sales")
             print("[migrate] dropped retail_brand_sales (FADA removed)")
+
+        # ------------- video_transcripts: add transcript_status + drop ----
+        #                NOT NULL on transcript (rebuild table)
+        if _table_exists(conn, "video_transcripts"):
+            cols = [r[1] for r in conn.execute("PRAGMA table_info(video_transcripts)").fetchall()]
+            transcript_col = next(
+                (r for r in conn.execute("PRAGMA table_info(video_transcripts)").fetchall()
+                 if r[1] == "transcript"),
+                None,
+            )
+            transcript_is_required = transcript_col is not None and transcript_col[3] == 1
+            need_rebuild = transcript_is_required or "transcript_status" not in cols
+            if need_rebuild:
+                # Rebuild with the correct shape: transcript NULLABLE, +
+                # transcript_status column. We can't ALTER COLUMN in SQLite,
+                # so create a fresh table and copy rows over.
+                conn.execute("ALTER TABLE video_transcripts RENAME TO video_transcripts_old")
+                conn.execute("""
+                    CREATE TABLE video_transcripts (
+                        video_id          TEXT PRIMARY KEY,
+                        channel_handle    TEXT NOT NULL,
+                        channel_name      TEXT NOT NULL,
+                        video_url         TEXT NOT NULL,
+                        title             TEXT NOT NULL,
+                        description       TEXT,
+                        duration_s        INTEGER,
+                        published_at      TEXT,
+                        transcript        TEXT,
+                        language          TEXT,
+                        transcript_status TEXT NOT NULL DEFAULT 'ok',
+                        fetched_at        TEXT NOT NULL
+                    )
+                """)
+                # Carry over both schemas (with or without transcript_status)
+                if "transcript_status" in cols:
+                    conn.execute("""
+                        INSERT INTO video_transcripts
+                          (video_id, channel_handle, channel_name, video_url, title,
+                           description, duration_s, published_at, transcript, language,
+                           transcript_status, fetched_at)
+                        SELECT video_id, channel_handle, channel_name, video_url, title,
+                               description, duration_s, published_at, transcript, language,
+                               transcript_status, fetched_at
+                        FROM video_transcripts_old
+                    """)
+                else:
+                    conn.execute("""
+                        INSERT INTO video_transcripts
+                          (video_id, channel_handle, channel_name, video_url, title,
+                           description, duration_s, published_at, transcript, language,
+                           fetched_at)
+                        SELECT video_id, channel_handle, channel_name, video_url, title,
+                               description, duration_s, published_at, transcript, language,
+                               fetched_at
+                        FROM video_transcripts_old
+                    """)
+                conn.execute("DROP TABLE video_transcripts_old")
+                print("[migrate] rebuilt video_transcripts: transcript nullable + transcript_status column")
 
         # ------------- Drop YouTube shadow rows from `reviews` -------------
         # YouTube transcripts are no longer shadow-inserted into `reviews`.
@@ -798,36 +858,111 @@ def upsert_video_transcript(
     description: str | None,
     duration_s: int | None,
     published_at: str | None,
-    transcript: str,
+    transcript: str | None,
     language: str | None,
+    transcript_status: str = "ok",
 ):
+    """Upsert video metadata. `transcript` may be None when the captions
+    fetch failed (rate-limit or no captions); in that case set
+    `transcript_status` to 'rate_limited' or 'no_captions' so the next
+    refresh can retry the pending ones.
+
+    Note: ON CONFLICT preserves existing transcript text if the new attempt
+    didn't fetch one. So a successful pull never gets clobbered by a later
+    rate-limited retry that only has metadata."""
     now = datetime.now(timezone.utc).isoformat()
     with get_conn() as conn:
         conn.execute(
             """INSERT INTO video_transcripts
                (video_id, channel_handle, channel_name, video_url, title,
                 description, duration_s, published_at, transcript, language,
-                fetched_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                transcript_status, fetched_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(video_id) DO UPDATE SET
                  title = excluded.title,
                  description = excluded.description,
                  duration_s = excluded.duration_s,
                  published_at = excluded.published_at,
-                 transcript = excluded.transcript,
-                 language = excluded.language,
+                 -- only overwrite transcript when the new fetch actually
+                 -- got one; otherwise keep what we already had
+                 transcript = COALESCE(excluded.transcript, video_transcripts.transcript),
+                 language = COALESCE(excluded.language, video_transcripts.language),
+                 transcript_status = CASE
+                     WHEN excluded.transcript IS NOT NULL THEN excluded.transcript_status
+                     WHEN video_transcripts.transcript IS NOT NULL THEN video_transcripts.transcript_status
+                     ELSE excluded.transcript_status
+                 END,
                  fetched_at = excluded.fetched_at""",
             (video_id, channel_handle, channel_name, video_url, title,
-             description, duration_s, published_at, transcript, language, now),
+             description, duration_s, published_at, transcript, language,
+             transcript_status, now),
         )
 
 
 def video_transcript_exists(video_id: str) -> bool:
+    """True only when we successfully fetched a transcript for this video.
+    Videos with metadata-only rows (rate_limited / no_captions / pending)
+    return False so the next refresh retries them."""
     with get_conn() as conn:
         row = conn.execute(
-            "SELECT 1 FROM video_transcripts WHERE video_id = ?", (video_id,)
+            "SELECT 1 FROM video_transcripts "
+            "WHERE video_id = ? AND transcript IS NOT NULL",
+            (video_id,),
         ).fetchone()
     return row is not None
+
+
+def list_all_video_transcripts(
+    channel_handle: str | None = None,
+    q: str | None = None,
+    limit: int = 500,
+    include_transcript: bool = False,
+) -> list[dict]:
+    """List videos for the standalone Influencer Reviews tab. Independent
+    of bike_id. Filterable by channel handle + free-text search.
+
+    `include_transcript` defaults to False — the listing endpoint serves
+    metadata only. Transcripts are 5–10k chars each; fetching all of them
+    on tab load makes the network round-trip slow on the dev proxy and
+    is wasteful when most users won't expand them. The per-bike endpoint
+    still includes transcripts because that's a smaller, scoped list."""
+    cols = (
+        "video_id, channel_handle, channel_name, video_url, "
+        "title, description, duration_s, published_at, language, "
+        "transcript_status, fetched_at"
+        + (", transcript" if include_transcript else "")
+    )
+    clauses: list[str] = []
+    params: list = []
+    if channel_handle:
+        clauses.append("channel_handle = ?")
+        params.append(channel_handle)
+    if q:
+        clauses.append("(LOWER(title) LIKE ? OR LOWER(description) LIKE ?)")
+        params.append(f"%{q.lower()}%")
+        params.append(f"%{q.lower()}%")
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    with get_conn() as conn:
+        rows = conn.execute(
+            f"""SELECT {cols}
+               FROM video_transcripts {where}
+               ORDER BY COALESCE(published_at, fetched_at) DESC
+               LIMIT ?""",
+            (*params, limit),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_channel_video_counts() -> dict[str, int]:
+    """Return {channel_handle: video_count} across all rows in
+    video_transcripts. Used by the Influencer Reviews tab to label
+    filter chips without pulling the full list."""
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT channel_handle, COUNT(*) FROM video_transcripts "
+            "GROUP BY channel_handle"
+        ).fetchall()
+    return {r[0]: int(r[1]) for r in rows}
 
 
 def upsert_video_bike_match(video_id: str, bike_id: str):

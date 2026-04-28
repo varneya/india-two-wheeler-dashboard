@@ -571,12 +571,14 @@ def _run_refresh_all(force: bool = False):
                         description=v.get("description"),
                         duration_s=v.get("duration_s"),
                         published_at=v.get("published_at"),
-                        transcript=v["transcript"],
+                        transcript=v.get("transcript"),
                         language=v.get("language"),
+                        transcript_status=v.get("transcript_status", "ok"),
                     )
-                    # Per-(video, bike) match rows so the Influencer Reviews
-                    # tab can list videos for each bike.
-                    for match in v["matched_bikes"]:
+                    # Per-(video, bike) match rows — best-effort tagging.
+                    # Empty matched_bikes is fine (bike content not in
+                    # our catalogue); the video still shows in the tab.
+                    for match in v.get("matched_bikes", []):
                         database.upsert_video_bike_match(v["video_id"], match["bike_id"])
                 return ch, len(candidates)
             except Exception as ce:
@@ -966,15 +968,50 @@ def get_brand_forecast_status(brand_id: str):
 
 
 # ===========================================================================
-# Bike-scoped influencer videos (Influencer Reviews tab)
+# Influencer Reviews tab — standalone listing, not bike-scoped.
 # ===========================================================================
+
+@app.get("/api/influencer-channels")
+def list_influencer_channels():
+    """Return the curated channels we scrape with their per-channel video
+    counts in the DB, in registry order. Used by the Influencer Reviews
+    tab to render filter chips with their counts in a single roundtrip
+    (no need to pull the whole video list to count)."""
+    counts = database.get_channel_video_counts()
+    return [
+        {
+            "name": ch["name"],
+            "handle": ch["handle"],
+            "channel_url": ch["channel_url"],
+            "video_count": counts.get(ch["handle"], 0),
+        }
+        for ch in youtube_scraper.CHANNELS
+    ]
+
+
+@app.get("/api/influencer-videos")
+def list_influencer_videos(
+    channel: str | None = None,
+    q: str | None = None,
+    limit: int = Query(500, ge=1, le=1000),
+    include_transcript: bool = False,
+):
+    """List ALL captured YouTube videos (independent of bike picker),
+    newest first. Metadata-only by default — pass ?include_transcript=true
+    when the caller needs transcript text inline."""
+    return database.list_all_video_transcripts(
+        channel_handle=channel,
+        q=q,
+        limit=limit,
+        include_transcript=include_transcript,
+    )
+
 
 @app.get("/api/bikes/{bike_id}/influencer-videos")
 def get_bike_influencer_videos(bike_id: str, include_transcript: bool = True):
-    """List YouTube videos matched to this bike, newest first. Each entry
-    carries channel name + video URL + (optionally) full transcript so the
-    Influencer Reviews tab can render the per-bike video list and an
-    expandable transcript without follow-up API calls."""
+    """Per-bike listing — kept for backwards-compat with the original
+    Sales-tab-coupled view, though the new Influencer Reviews tab uses
+    /api/influencer-videos directly."""
     return database.get_video_transcripts_for_bike(
         bike_id, include_transcript=include_transcript,
     )

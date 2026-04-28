@@ -139,10 +139,32 @@ export interface InfluencerVideo {
   published_at: string | null   // 'YYYYMMDD' from yt-dlp upload_date
   language: string | null
   fetched_at: string
-  transcript?: string           // present when include_transcript=true
+  // 'ok' | 'rate_limited' | 'no_captions' | 'pending'
+  transcript_status?: string
+  transcript?: string | null    // null when status != 'ok'
 }
 
-export const fetchInfluencerVideos = (
+export interface InfluencerChannel {
+  name: string
+  handle: string
+  channel_url: string
+  video_count: number
+}
+
+// Standalone listing — independent of bike picker. Optional filters.
+export const fetchAllInfluencerVideos = (
+  opts: { channel?: string; q?: string } = {},
+): Promise<InfluencerVideo[]> =>
+  api
+    .get<InfluencerVideo[]>('/influencer-videos', { params: opts })
+    .then(r => r.data)
+
+export const fetchInfluencerChannels = (): Promise<InfluencerChannel[]> =>
+  api.get<InfluencerChannel[]>('/influencer-channels').then(r => r.data)
+
+// Per-bike (kept for backwards-compat with anywhere we still want
+// "videos for this specific bike").
+export const fetchInfluencerVideosForBike = (
   bikeId: string,
 ): Promise<InfluencerVideo[]> =>
   api

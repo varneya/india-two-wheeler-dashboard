@@ -329,15 +329,10 @@ function Dashboard() {
           )
         )}
 
-        {/* Influencer Reviews — per-bike YouTube transcripts from the
-            curated motorcycle channels. Brand-mode lands on the empty
-            state since influencer videos are bike-specific. */}
-        {tab === 'influencers' && (
-          <InfluencerReviewsTab
-            bikeId={selectedBikeId}
-            bikeName={selectedBike?.display_name ?? selectedBikeId}
-          />
-        )}
+        {/* Influencer Reviews — standalone listing of motorcycle videos
+            from the curated YouTube channels. Independent of the global
+            brand/model picker; has its own channel + search filters. */}
+        {tab === 'influencers' && <InfluencerReviewsTab />}
 
         {/* Data Refresh tab */}
         {tab === 'refresh' && <RefreshTab />}
