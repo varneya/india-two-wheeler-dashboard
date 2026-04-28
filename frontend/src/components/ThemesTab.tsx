@@ -200,7 +200,14 @@ function HardwareCard({
                 >
                   <div className="flex items-center gap-3">
                     <div className="flex-1 min-w-0">
-                      <p className="text-sm text-white font-mono">{m.name}</p>
+                      <div className="flex items-center gap-2">
+                        <p className="text-sm text-white font-mono">{m.name}</p>
+                        {m.recommended && (
+                          <span className="text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded-full bg-violet-500/15 text-violet-300 border border-violet-500/30 font-medium">
+                            Recommended
+                          </span>
+                        )}
+                      </div>
                       <p className="text-xs text-slate-400 truncate">
                         {m.size_label} · {m.quality} · {m.description}
                       </p>

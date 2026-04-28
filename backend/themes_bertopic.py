@@ -47,7 +47,7 @@ OLLAMA_CHAT_URL = "http://localhost:11434/api/chat"
 
 def _refine_names_via_llm(
     cluster_summaries: list[dict],
-    model: str = "mistral:7b",
+    model: str = "qwen3:8b",
 ) -> dict[int, str]:
     """For each cluster, ask the local LLM to coin a short 2-3 word theme
     name from its top quotes + top terms. Returns {cluster_id: name}.

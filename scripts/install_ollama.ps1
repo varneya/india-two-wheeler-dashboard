@@ -3,14 +3,16 @@
 #
 # Usage (from the repo root, in PowerShell):
 #   powershell -ExecutionPolicy Bypass -File scripts\install_ollama.ps1
-#   powershell -ExecutionPolicy Bypass -File scripts\install_ollama.ps1 mistral:7b
+#   powershell -ExecutionPolicy Bypass -File scripts\install_ollama.ps1 qwen3:8b
 #
-# If no model is specified, defaults to llama3.2:3b (fast, works on 8 GB RAM).
-# Recommended models by RAM:
-#   4  GB  -> phi3:mini    (2.2 GB)
-#   8  GB  -> llama3.2:3b  (2.0 GB) or mistral:7b (4.1 GB)
-#   16 GB  -> llama3.2:8b  (4.7 GB)  -- best balance of speed & quality
-#   32 GB+ -> mixtral:8x7b (26 GB)   -- excellent quality
+# If no model is specified, defaults to qwen3:4b (fast, works on 4 GB RAM,
+# beats llama3.2:3b on instruction-following + JSON discipline at a similar
+# footprint). Recommended models by RAM (current as of April 2026):
+#   4  GB  -> qwen3:4b      (2.5 GB)  -- default; gemma3:4b for multilingual
+#   8  GB  -> qwen3:8b      (5.2 GB)  -- top open 8B; granite3.3:8b for JSON
+#   16 GB  -> qwen3:14b     (9.3 GB)  -- best dense 14B; phi4:14b alternative
+#   32 GB  -> qwen3:32b     (20 GB)   -- best dense 32B
+#   48 GB+ -> llama3.3:70b  (43 GB)   -- Meta's best dense
 #
 # Mirrors scripts/install_ollama.sh (macOS) so users on either OS see the
 # same checkpoints. Sets OLLAMA_ORIGINS persistently at User scope so it
@@ -19,7 +21,7 @@
 
 param(
     [Parameter(Position = 0)]
-    [string]$Model = "llama3.2:3b"
+    [string]$Model = "qwen3:4b"
 )
 
 $ErrorActionPreference = "Stop"
@@ -166,7 +168,9 @@ Write-Host ""
 Write-Host "In the dashboard, select LLM Analysis -> Local (Ollama) and pick $Model from the model list."
 Write-Host ""
 Write-Host "To pull a different model later:"
-Write-Host "  ollama pull mistral:7b"
+Write-Host "  ollama pull qwen3:8b      # 8 GB RAM, top open 8B"
+Write-Host "  ollama pull qwen3:14b     # 16 GB RAM"
+Write-Host "  ollama pull qwen3:32b     # 32 GB RAM"
 Write-Host ""
 Write-Host "To change the allowlisted origin later:"
 Write-Host "  [Environment]::SetEnvironmentVariable(""OLLAMA_ORIGINS"", ""https://your-host"", ""User"")"

@@ -9,7 +9,7 @@
 #   3. Clones (or pulls) the repo at /opt/twowheeler
 #   4. Runs scripts/install_backend.sh (Python venv + pip install)
 #   5. Installs Ollama via the official one-liner; pulls
-#      nomic-embed-text + mistral:7b
+#      nomic-embed-text + qwen3:8b
 #   6. Writes the systemd units from deploy/ with TWB_* placeholders
 #      substituted; enables + starts them
 #   7. Writes /etc/caddy/Caddyfile with the DuckDNS subdomain + reverse_proxy
@@ -58,7 +58,7 @@ TWB_EMBEDDING_BACKEND="${TWB_EMBEDDING_BACKEND:-ollama}"
 TWB_USER="${TWB_USER:-${SUDO_USER:-$USER}}"
 TWB_REPO="${TWB_REPO:-/opt/twowheeler}"
 TWB_REPO_URL="${TWB_REPO_URL:-https://github.com/varneya/india-two-wheeler-dashboard.git}"
-TWB_OLLAMA_MODELS="${TWB_OLLAMA_MODELS:-nomic-embed-text mistral:7b}"
+TWB_OLLAMA_MODELS="${TWB_OLLAMA_MODELS:-nomic-embed-text qwen3:8b}"
 
 if [[ -z "$TWB_DUCKDNS_DOMAIN" || -z "$TWB_DUCKDNS_TOKEN" ]]; then
   err "TWB_DUCKDNS_DOMAIN and TWB_DUCKDNS_TOKEN are required."

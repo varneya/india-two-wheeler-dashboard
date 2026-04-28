@@ -44,6 +44,9 @@ export interface OllamaModel {
   quality: string
   description: string
   pulled: boolean
+  // Marks the canonical default at this RAM tier so the UI can star/highlight
+  // it. Optional because older backends may not send it.
+  recommended?: boolean
 }
 
 export interface HardwareInfo {

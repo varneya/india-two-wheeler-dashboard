@@ -62,7 +62,11 @@ brew install ollama
 # Start with this origin allowlisted (so the hosted page can reach it)
 OLLAMA_ORIGINS="https://varneya.github.io" ollama serve`,
     models: `ollama pull nomic-embed-text
-ollama pull mistral:7b      # or llama3.2:3b for 8 GB RAM, phi3:mini for 4 GB`,
+ollama pull qwen3:8b        # 8 GB RAM (recommended) — top open 8B
+# Other tiers:
+#   16 GB RAM:  ollama pull qwen3:14b
+#   32 GB RAM:  ollama pull qwen3:32b
+#   4 GB RAM:   ollama pull qwen3:4b   (or gemma3:4b for multilingual)`,
     notes: `Tip: to keep OLLAMA_ORIGINS set across reboots, run
 launchctl setenv OLLAMA_ORIGINS "https://varneya.github.io"
 once and restart the Ollama.app from /Applications.`,
@@ -93,7 +97,11 @@ scripts\\install_ollama.cmd
 $env:OLLAMA_ORIGINS = "https://varneya.github.io"
 ollama serve`,
     models: `ollama pull nomic-embed-text
-ollama pull mistral:7b      # or llama3.2:3b for 8 GB RAM, phi3:mini for 4 GB`,
+ollama pull qwen3:8b        # 8 GB RAM (recommended) — top open 8B
+# Other tiers:
+#   16 GB RAM:  ollama pull qwen3:14b
+#   32 GB RAM:  ollama pull qwen3:32b
+#   4 GB RAM:   ollama pull qwen3:4b   (or gemma3:4b for multilingual)`,
     notes: `Tip: the bundled installer persists OLLAMA_ORIGINS via
 [Environment]::SetEnvironmentVariable(...) so it survives reboots.
 If you went the manual route, set it once via System Properties →
@@ -119,7 +127,11 @@ curl -fsSL https://ollama.com/install.sh | sh
 # Start with this origin allowlisted
 OLLAMA_ORIGINS="https://varneya.github.io" ollama serve`,
     models: `ollama pull nomic-embed-text
-ollama pull mistral:7b      # or llama3.2:3b for 8 GB RAM, phi3:mini for 4 GB`,
+ollama pull qwen3:8b        # 8 GB RAM (recommended) — top open 8B
+# Other tiers:
+#   16 GB RAM:  ollama pull qwen3:14b
+#   32 GB RAM:  ollama pull qwen3:32b
+#   4 GB RAM:   ollama pull qwen3:4b   (or gemma3:4b for multilingual)`,
     notes: `Tip: if running Ollama as a systemd service,
 sudo systemctl edit ollama.service
 and add Environment="OLLAMA_ORIGINS=https://varneya.github.io" under [Service].`,

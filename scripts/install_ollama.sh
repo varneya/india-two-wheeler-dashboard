@@ -6,17 +6,19 @@
 #   chmod +x scripts/install_ollama.sh
 #   ./scripts/install_ollama.sh [model]
 #
-# If no model is specified, defaults to llama3.2:3b (fast, works on 8 GB RAM).
-# Recommended models by RAM:
-#   4  GB  → phi3:mini    (2.2 GB)
-#   8  GB  → llama3.2:3b  (2.0 GB) or mistral:7b (4.1 GB)
-#   16 GB  → llama3.2:8b  (4.7 GB) — best balance of speed & quality
-#   32 GB+ → mixtral:8x7b (26 GB)  — excellent quality
+# If no model is specified, defaults to qwen3:4b (fast, works on 4 GB RAM,
+# beats llama3.2:3b on instruction-following + JSON discipline at a similar
+# footprint). Recommended models by RAM (current as of April 2026):
+#   4  GB  → qwen3:4b      (2.5 GB) — default; gemma3:4b for multilingual
+#   8  GB  → qwen3:8b      (5.2 GB) — top open 8B; granite3.3:8b for tight JSON
+#   16 GB  → qwen3:14b     (9.3 GB) — best dense 14B; phi4:14b alternative
+#   32 GB  → qwen3:32b     (20 GB)  — best dense 32B; deepseek-r1:32b for reasoning
+#   48 GB+ → llama3.3:70b  (43 GB)  — Meta's best dense; deepseek-r1:70b reasoner
 # =============================================================================
 
 set -euo pipefail
 
-MODEL="${1:-llama3.2:3b}"
+MODEL="${1:-qwen3:4b}"
 
 BOLD="\033[1m"
 GREEN="\033[32m"
@@ -148,7 +150,9 @@ echo -e "  In the dashboard, select ${BOLD}LLM Analysis${RESET} → choose ${BOL
 echo -e "  and pick ${BOLD}$MODEL${RESET} from the model list."
 echo ""
 echo -e "To pull a different model later:"
-echo -e "  ${CYAN}ollama pull mistral:7b${RESET}"
+echo -e "  ${CYAN}ollama pull qwen3:8b${RESET}    # 8 GB RAM, top open 8B"
+echo -e "  ${CYAN}ollama pull qwen3:14b${RESET}   # 16 GB RAM"
+echo -e "  ${CYAN}ollama pull qwen3:32b${RESET}   # 32 GB RAM"
 echo ""
 echo -e "To keep the server running across reboots (macOS):"
 echo -e "  ${CYAN}brew services start ollama${RESET}  (if installed via Homebrew)"
