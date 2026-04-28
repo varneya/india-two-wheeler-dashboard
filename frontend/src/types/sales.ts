@@ -13,6 +13,7 @@ export const SOURCE_META: Record<string, { label: string; color: string }> = {
   autopunditz: { label: 'AutoPunditz', color: 'bg-violet-900/40 text-violet-300 border-violet-700/50' },
   fada:        { label: 'FADA Retail', color: 'bg-amber-900/40 text-amber-300 border-amber-700/50' },
   bikedekho:   { label: 'BikeDekho',   color: 'bg-emerald-900/40 text-emerald-300 border-emerald-700/50' },
+  youtube:     { label: 'YouTube',     color: 'bg-red-900/40 text-red-300 border-red-700/50' },
 }
 
 export interface MonthSummary {

@@ -156,7 +156,7 @@ export function RefreshTab() {
   const dBikes = status?.discovery.bikes_found ?? 0
   const dPercent = dUrlsTotal > 0 ? (dUrlsDone / dUrlsTotal) * 100 : 0
   const stage1Active = stage === 'discovering'
-  const stage1Complete = ['reviews', 'other_sources', 'autopunditz', 'retail', 'done'].includes(stage)
+  const stage1Complete = ['reviews', 'other_sources', 'autopunditz', 'youtube', 'retail', 'done'].includes(stage)
   const stage1Percent = stage1Complete ? 100 : dPercent
 
   // Stage 2 — reviews (BikeWale)
@@ -165,7 +165,7 @@ export function RefreshTab() {
   const rCurrent = status?.reviews.current_bike
   const rAdded = status?.reviews.reviews_added ?? 0
   const stage2Active = stage === 'reviews'
-  const stage2Complete = ['other_sources', 'autopunditz', 'retail', 'done'].includes(stage)
+  const stage2Complete = ['other_sources', 'autopunditz', 'youtube', 'retail', 'done'].includes(stage)
   const stage2Percent =
     stage2Complete ? 100 : rTotal > 0 ? (rDone / rTotal) * 100 : 0
 
@@ -178,7 +178,7 @@ export function RefreshTab() {
   const oReddit = status?.other_sources?.reddit_added ?? 0
   const oTotalAdded = oBikedekho + oZigwheels + oReddit
   const stage3Active = stage === 'other_sources'
-  const stage3Complete = ['autopunditz', 'retail', 'done'].includes(stage)
+  const stage3Complete = ['autopunditz', 'youtube', 'retail', 'done'].includes(stage)
   const stage3Percent =
     stage3Complete ? 100 : oTotal > 0 ? (oDone / oTotal) * 100 : 0
 
@@ -188,18 +188,29 @@ export function RefreshTab() {
   const apModelRows = status?.autopunditz?.model_rows_added ?? 0
   const apBrandRows = status?.autopunditz?.brand_rows_added ?? 0
   const stage4Active = stage === 'autopunditz'
-  const stage4Complete = ['retail', 'done'].includes(stage)
+  const stage4Complete = ['youtube', 'retail', 'done'].includes(stage)
   const stage4Percent =
     stage4Complete ? 100 : apPostsTotal > 0 ? (apPostsDone / apPostsTotal) * 100 : 0
 
-  // Stage 5 — FADA retail
+  // Stage 5 — YouTube transcripts (per-channel)
+  const ytChannelsTotal = status?.youtube?.channels_total ?? 0
+  const ytChannelsDone = status?.youtube?.channels_done ?? 0
+  const ytCurrentChannel = status?.youtube?.current_channel
+  const ytVideosKept = status?.youtube?.videos_kept ?? 0
+  const ytShadowRows = status?.youtube?.shadow_rows_added ?? 0
+  const stage5Active = stage === 'youtube'
+  const stage5Complete = ['retail', 'done'].includes(stage)
+  const stage5Percent =
+    stage5Complete ? 100 : ytChannelsTotal > 0 ? (ytChannelsDone / ytChannelsTotal) * 100 : 0
+
+  // Stage 6 — FADA retail
   const rPdfTotal = status?.retail?.pdfs_total ?? 0
   const rPdfDone = status?.retail?.pdfs_done ?? 0
   const rRows = status?.retail?.rows_added ?? 0
-  const stage5Active = stage === 'retail'
-  const stage5Complete = stage === 'done'
-  const stage5Percent =
-    stage5Complete ? 100 : rPdfTotal > 0 ? (rPdfDone / rPdfTotal) * 100 : 0
+  const stage6Active = stage === 'retail'
+  const stage6Complete = stage === 'done'
+  const stage6Percent =
+    stage6Complete ? 100 : rPdfTotal > 0 ? (rPdfDone / rPdfTotal) * 100 : 0
 
   // Per-stage HTTP cache counters: "N cached / M fetched". Hidden when both
   // are zero (idle / pre-stage). Cached count = URLs that 304'd or had a
@@ -232,7 +243,7 @@ export function RefreshTab() {
           <div>
             <h2 className="text-lg font-semibold text-foreground">Data Refresh</h2>
             <p className="text-muted-foreground text-sm mt-1">
-              Re-scrape RushLane + AutoPunditz wholesale, BikeWale reviews, and FADA monthly retail data.
+              Re-scrape RushLane + AutoPunditz wholesale, BikeWale reviews, YouTube transcripts, and FADA monthly retail data.
             </p>
           </div>
           <div className="flex items-center gap-2 shrink-0">
@@ -302,7 +313,7 @@ export function RefreshTab() {
                   variant={stage1Complete ? 'success' : stage1Active ? 'info' : 'secondary'}
                   className="rounded-full"
                 >
-                  Stage 1 / 5
+                  Stage 1 / 6
                 </Badge>
                 <span className="text-white font-medium">Discovering bikes from RushLane</span>
                 {stage1Active && status?.discovery.stage && (
@@ -333,7 +344,7 @@ export function RefreshTab() {
                   variant={stage2Complete ? 'success' : stage2Active ? 'info' : 'secondary'}
                   className="rounded-full"
                 >
-                  Stage 2 / 5
+                  Stage 2 / 6
                 </Badge>
                 <span className="text-white font-medium">Refreshing BikeWale reviews</span>
                 {stage2Active && rCurrent && (
@@ -364,7 +375,7 @@ export function RefreshTab() {
                   variant={stage3Complete ? 'success' : stage3Active ? 'info' : 'secondary'}
                   className="rounded-full"
                 >
-                  Stage 3 / 5
+                  Stage 3 / 6
                 </Badge>
                 <span className="text-white font-medium">BikeDekho · ZigWheels · Reddit</span>
                 {stage3Active && oCurrent && (
@@ -395,7 +406,7 @@ export function RefreshTab() {
                   variant={stage4Complete ? 'success' : stage4Active ? 'info' : 'secondary'}
                   className="rounded-full"
                 >
-                  Stage 4 / 5
+                  Stage 4 / 6
                 </Badge>
                 <span className="text-white font-medium">Scraping AutoPunditz posts</span>
               </div>
@@ -414,7 +425,7 @@ export function RefreshTab() {
           </div>
         )}
 
-        {/* Stage 5 — FADA retail */}
+        {/* Stage 5 — YouTube transcripts */}
         {(isRunning || isDone || isError) && (
           <div className="space-y-2">
             <div className="flex items-center justify-between text-sm">
@@ -423,13 +434,44 @@ export function RefreshTab() {
                   variant={stage5Complete ? 'success' : stage5Active ? 'info' : 'secondary'}
                   className="rounded-full"
                 >
-                  Stage 5 / 5
+                  Stage 5 / 6
+                </Badge>
+                <span className="text-white font-medium">Pulling YouTube transcripts</span>
+                {stage5Active && ytCurrentChannel && (
+                  <span className="text-xs text-slate-400 truncate">· {ytCurrentChannel}</span>
+                )}
+              </div>
+              <div className="flex items-center gap-3">
+                <span className="text-xs text-slate-400 font-mono tabular-nums">
+                  {stage5Complete
+                    ? `${ytVideosKept} videos · ${ytShadowRows} shadow rows`
+                    : ytChannelsTotal > 0
+                    ? `${ytChannelsDone}/${ytChannelsTotal} channels · ${ytVideosKept} videos`
+                    : 'queued'}
+                </span>
+                {cacheCounter(status?.youtube)}
+              </div>
+            </div>
+            <ProgressBar percent={stage5Percent} active={stage5Active} />
+          </div>
+        )}
+
+        {/* Stage 6 — FADA retail */}
+        {(isRunning || isDone || isError) && (
+          <div className="space-y-2">
+            <div className="flex items-center justify-between text-sm">
+              <div className="flex items-center gap-2 min-w-0">
+                <Badge
+                  variant={stage6Complete ? 'success' : stage6Active ? 'info' : 'secondary'}
+                  className="rounded-full"
+                >
+                  Stage 6 / 6
                 </Badge>
                 <span className="text-white font-medium">Fetching FADA retail data</span>
               </div>
               <div className="flex items-center gap-3">
                 <span className="text-xs text-slate-400 font-mono tabular-nums">
-                  {stage5Complete
+                  {stage6Complete
                     ? `${rRows} rows added`
                     : rPdfTotal > 0
                     ? `${rPdfDone}/${rPdfTotal} PDFs · ${rRows} rows`
@@ -438,7 +480,7 @@ export function RefreshTab() {
                 {cacheCounter(status?.retail)}
               </div>
             </div>
-            <ProgressBar percent={stage5Percent} active={stage5Active} />
+            <ProgressBar percent={stage6Percent} active={stage6Active} />
           </div>
         )}
         </CardContent>
@@ -450,9 +492,12 @@ export function RefreshTab() {
         reviews; Stage 3 layers in BikeDekho user reviews (with ratings), ZigWheels user reviews, and
         relevant comments from <a className="underline" href="https://www.reddit.com/r/IndianBikes/" target="_blank" rel="noreferrer">r/IndianBikes</a>.
         Stage 4 augments wholesale data with <a className="underline" href="https://www.autopunditz.com/two-wheeler-sales-figures" target="_blank" rel="noreferrer">AutoPunditz</a> per-brand
-        prose (per-model rows) and monthly aggregate posts (brand-level totals). Retail data comes
-        from FADA's monthly Vehicle Retail Data PDFs (brand-level only). Theme analysis is not
-        auto-rerun — open the Theme Analysis tab and click Run for a specific bike.
+        prose (per-model rows) and monthly aggregate posts (brand-level totals). Stage 5 pulls
+        English auto-captions from 13 Indian motorcycle YouTube channels (Autocar India, PowerDrift,
+        MotorBeam, Gagan Choudhary, Dino's Vault, Strell, MotorInc, Auto Yogi, Bike with Girl,
+        BikeDekho, BikeWale, ZigWheels, EVO India) and stores them as shadow rows for theme
+        analysis. Retail data comes from FADA's monthly Vehicle Retail Data PDFs (brand-level only).
+        Theme analysis is not auto-rerun — open the Theme Analysis tab and click Run for a specific bike.
       </p>
     </div>
   )

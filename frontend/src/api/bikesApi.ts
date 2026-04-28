@@ -69,6 +69,7 @@ export interface RefreshAllStatus {
     | 'reviews'
     | 'other_sources'
     | 'autopunditz'
+    | 'youtube'
     | 'retail'
     | 'done'
     | 'error'
@@ -103,6 +104,13 @@ export interface RefreshAllStatus {
     posts_done: number
     model_rows_added: number
     brand_rows_added: number
+  }
+  youtube?: StageCache & {
+    channels_total: number
+    channels_done: number
+    current_channel: string | null
+    videos_kept: number
+    shadow_rows_added: number
   }
   retail: StageCache & {
     pdfs_total: number

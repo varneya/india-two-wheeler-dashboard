@@ -25,6 +25,7 @@ import bike_registry
 import bike_catalogue
 import fada_scraper
 import autopunditz_scraper
+import youtube_scraper
 import url_cache
 
 
@@ -325,7 +326,7 @@ _refresh_all_lock = threading.Lock()
 _refresh_all_running: bool = False
 _refresh_all_state: dict = {
     "running": False,
-    "stage": "idle",            # idle | discovering | reviews | other_sources | autopunditz | retail | done | error
+    "stage": "idle",            # idle | discovering | reviews | other_sources | autopunditz | youtube | retail | done | error
     "started_at": None,
     "finished_at": None,
     "force": False,             # set when caller invoked /api/refresh-all?force=true
@@ -348,6 +349,12 @@ _refresh_all_state: dict = {
     "autopunditz": {            # AutoPunditz brand + aggregate posts
         "posts_total": 0, "posts_done": 0,
         "model_rows_added": 0, "brand_rows_added": 0,
+        "cached": 0, "fetched": 0,
+    },
+    "youtube": {                # YouTube transcripts (Stage 6)
+        "channels_total": 0, "channels_done": 0,
+        "current_channel": None,
+        "videos_kept": 0, "shadow_rows_added": 0,
         "cached": 0, "fetched": 0,
     },
     "retail": {                 # FADA monthly retail PDFs
@@ -395,6 +402,12 @@ def _run_refresh_all(force: bool = False):
         _refresh_all_state["autopunditz"] = {
             "posts_total": 0, "posts_done": 0,
             "model_rows_added": 0, "brand_rows_added": 0,
+            "cached": 0, "fetched": 0,
+        }
+        _refresh_all_state["youtube"] = {
+            "channels_total": 0, "channels_done": 0,
+            "current_channel": None,
+            "videos_kept": 0, "shadow_rows_added": 0,
             "cached": 0, "fetched": 0,
         }
         _refresh_all_state["retail"] = {
@@ -564,7 +577,71 @@ def _run_refresh_all(force: bool = False):
 
         _flush_cache_stats("autopunditz")
 
-        # Stage 5 — FADA monthly retail PDFs (brand-level)
+        # Stage 6 — YouTube transcripts. For each channel in
+        # youtube_scraper.CHANNELS, list recent videos via yt-dlp, match
+        # bike-keywords against title+description, fetch English captions
+        # for matches, store full transcript + per-(video, bike) shadow
+        # rows in `reviews` so themes/embeddings pick them up unchanged.
+        with _refresh_all_lock:
+            _refresh_all_state["stage"] = "youtube"
+            _refresh_all_state["youtube"]["channels_total"] = len(youtube_scraper.CHANNELS)
+        try:
+            yt_videos_kept = 0
+            yt_shadow_rows = 0
+
+            for ch in youtube_scraper.CHANNELS:
+                with _refresh_all_lock:
+                    _refresh_all_state["youtube"]["current_channel"] = ch["name"]
+                try:
+                    candidates = youtube_scraper.scrape_channel(
+                        ch,
+                        video_limit=youtube_scraper.DEFAULT_VIDEO_LIMIT,
+                        skip_seen_video=database.video_transcript_exists,
+                    )
+                    for v in candidates:
+                        database.upsert_video_transcript(
+                            video_id=v["video_id"],
+                            channel_handle=v["channel_handle"],
+                            channel_name=v["channel_name"],
+                            video_url=v["video_url"],
+                            title=v["title"],
+                            description=v.get("description"),
+                            duration_s=v.get("duration_s"),
+                            published_at=v.get("published_at"),
+                            transcript=v["transcript"],
+                            language=v.get("language"),
+                        )
+                        # Build a single review-style blob per (video, bike).
+                        # Cap at TRANSCRIPT_REVIEW_CAP so embeddings aren't
+                        # disproportionately influenced by long videos.
+                        body = v["transcript"][:youtube_scraper.TRANSCRIPT_REVIEW_CAP]
+                        for match in v["matched_bikes"]:
+                            bike_id = match["bike_id"]
+                            database.upsert_video_bike_match(v["video_id"], bike_id)
+                            shadow_post_id = f"youtube:{v['video_id']}:{bike_id}"
+                            database.upsert_review(
+                                bike_id=bike_id,
+                                source="youtube",
+                                post_id=shadow_post_id,
+                                username=v["channel_name"],
+                                review_text=f"{v['title']}\n\n{body}",
+                                overall_rating=None,
+                                thread_url=v["video_url"],
+                            )
+                            yt_shadow_rows += 1
+                    yt_videos_kept += len(candidates)
+                except Exception as ce:
+                    print(f"[refresh-all] youtube channel {ch['handle']} failed: {ce}")
+                with _refresh_all_lock:
+                    _refresh_all_state["youtube"]["channels_done"] += 1
+                    _refresh_all_state["youtube"]["videos_kept"] = yt_videos_kept
+                    _refresh_all_state["youtube"]["shadow_rows_added"] = yt_shadow_rows
+        except Exception as ye:
+            print(f"[refresh-all] youtube stage failed: {ye}")
+
+        _flush_cache_stats("youtube")
+
+        # Stage 7 — FADA monthly retail PDFs (brand-level)
         with _refresh_all_lock:
             _refresh_all_state["stage"] = "retail"
         try:
@@ -645,6 +722,7 @@ def refresh_all_status():
             "reviews": dict(_refresh_all_state["reviews"]),
             "other_sources": dict(_refresh_all_state.get("other_sources") or {}),
             "autopunditz": dict(_refresh_all_state.get("autopunditz") or {}),
+            "youtube": dict(_refresh_all_state.get("youtube") or {}),
             "retail": dict(_refresh_all_state.get("retail") or {}),
             "error": _refresh_all_state["error"],
         }

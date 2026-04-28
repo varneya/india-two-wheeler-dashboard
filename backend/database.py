@@ -145,6 +145,30 @@ def init_db():
                 updated_at     TEXT NOT NULL,
                 PRIMARY KEY (bike_id, source)
             );
+            -- Stage 6 — YouTube transcripts. video_transcripts holds the full
+            -- transcript + metadata once per video; video_bike_match maps a
+            -- video to one or more bikes (a comparison video maps to many).
+            -- A shadow row in the `reviews` table per (video, bike) feeds the
+            -- existing themes/embedding pipeline for free.
+            CREATE TABLE IF NOT EXISTS video_transcripts (
+                video_id       TEXT PRIMARY KEY,
+                channel_handle TEXT NOT NULL,
+                channel_name   TEXT NOT NULL,
+                video_url      TEXT NOT NULL,
+                title          TEXT NOT NULL,
+                description    TEXT,
+                duration_s     INTEGER,
+                published_at   TEXT,
+                transcript     TEXT NOT NULL,
+                language       TEXT,
+                fetched_at     TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS video_bike_match (
+                video_id  TEXT NOT NULL,
+                bike_id   TEXT NOT NULL,
+                matched_at TEXT NOT NULL,
+                PRIMARY KEY (video_id, bike_id)
+            );
         """)
 
         # ------------- Add bike_id columns (idempotent) -------------
@@ -784,6 +808,77 @@ def upsert_review_cursor(bike_id: str, source: str, last_post_id: str):
                  updated_at = excluded.updated_at""",
             (bike_id, source, last_post_id, now),
         )
+
+
+# ---------------------------------------------------------------------------
+# YouTube video transcripts (Stage 6)
+# ---------------------------------------------------------------------------
+
+def upsert_video_transcript(
+    video_id: str,
+    channel_handle: str,
+    channel_name: str,
+    video_url: str,
+    title: str,
+    description: str | None,
+    duration_s: int | None,
+    published_at: str | None,
+    transcript: str,
+    language: str | None,
+):
+    now = datetime.now(timezone.utc).isoformat()
+    with get_conn() as conn:
+        conn.execute(
+            """INSERT INTO video_transcripts
+               (video_id, channel_handle, channel_name, video_url, title,
+                description, duration_s, published_at, transcript, language,
+                fetched_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(video_id) DO UPDATE SET
+                 title = excluded.title,
+                 description = excluded.description,
+                 duration_s = excluded.duration_s,
+                 published_at = excluded.published_at,
+                 transcript = excluded.transcript,
+                 language = excluded.language,
+                 fetched_at = excluded.fetched_at""",
+            (video_id, channel_handle, channel_name, video_url, title,
+             description, duration_s, published_at, transcript, language, now),
+        )
+
+
+def video_transcript_exists(video_id: str) -> bool:
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM video_transcripts WHERE video_id = ?", (video_id,)
+        ).fetchone()
+    return row is not None
+
+
+def upsert_video_bike_match(video_id: str, bike_id: str):
+    now = datetime.now(timezone.utc).isoformat()
+    with get_conn() as conn:
+        conn.execute(
+            """INSERT INTO video_bike_match (video_id, bike_id, matched_at)
+               VALUES (?, ?, ?)
+               ON CONFLICT(video_id, bike_id) DO NOTHING""",
+            (video_id, bike_id, now),
+        )
+
+
+def get_video_transcripts_for_bike(bike_id: str) -> list[dict]:
+    """List videos matched to this bike (newest first)."""
+    with get_conn() as conn:
+        rows = conn.execute(
+            """SELECT v.video_id, v.channel_handle, v.channel_name, v.video_url,
+                      v.title, v.published_at, v.duration_s, v.language
+               FROM video_transcripts v
+               JOIN video_bike_match m ON v.video_id = m.video_id
+               WHERE m.bike_id = ?
+               ORDER BY COALESCE(v.published_at, v.fetched_at) DESC""",
+            (bike_id,),
+        ).fetchall()
+    return [dict(r) for r in rows]
 
 
 # ---------------------------------------------------------------------------

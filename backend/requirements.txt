@@ -16,3 +16,7 @@ psutil
 # 90 MB model, no Ollama required). Installs torch (~1 GB). Comment out if you
 # only want the Ollama embedding backend and care about install footprint.
 sentence-transformers
+# YouTube transcript scraper (Stage 6). yt-dlp lists channel videos without
+# an API key; youtube-transcript-api pulls auto-generated captions.
+yt-dlp
+youtube-transcript-api
