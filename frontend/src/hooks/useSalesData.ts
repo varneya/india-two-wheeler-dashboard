@@ -13,7 +13,6 @@ import {
   fetchSalesSeries,
   triggerBrandForecastRefresh,
   triggerForecastRefresh,
-  type BrandSecondaryPoint,
   type ForecastResult,
 } from '../api/salesApi'
 import type { SalesSeriesResponse } from '../types/sales'
@@ -84,14 +83,9 @@ export function useSalesData({ bikeId, brandId }: Args) {
     queryKey: ['sales-series', scopeKey],
     queryFn: async () => {
       if (isBrandMode) {
-        const r = await fetchBrandSalesSeries(brandId!)
-        return r as unknown as SalesSeriesResponse & {
-          secondary_series?: BrandSecondaryPoint[]
-        }
+        return (await fetchBrandSalesSeries(brandId!)) as unknown as SalesSeriesResponse
       }
-      return fetchSalesSeries(bikeId!) as unknown as SalesSeriesResponse & {
-        secondary_series?: BrandSecondaryPoint[]
-      }
+      return fetchSalesSeries(bikeId!) as unknown as SalesSeriesResponse
     },
     enabled: !!scopeKey,
   })
@@ -144,9 +138,7 @@ export function useSalesData({ bikeId, brandId }: Args) {
     }
   }
 
-  const series = (seriesQuery.data ?? null) as
-    | (SalesSeriesResponse & { secondary_series?: BrandSecondaryPoint[] })
-    | null
+  const series = (seriesQuery.data ?? null) as SalesSeriesResponse | null
   const forecast: ForecastResult | null =
     showForecast && forecastQuery.data ? forecastQuery.data : null
   const observedCount = series?.history.filter(h => !h.imputed).length ?? 0
@@ -157,7 +149,6 @@ export function useSalesData({ bikeId, brandId }: Args) {
     series,
     forecast,
     observedCount,
-    secondarySeries: series?.secondary_series ?? null,
     isBrandMode,
 
     showForecast,

@@ -197,7 +197,7 @@ export function SalesChartControls({
           <div className="rounded-lg border border-border/60 bg-card/50 p-4 text-sm space-y-2.5 text-muted-foreground">
             <p>
               <strong className="text-foreground">Real data</strong> are months
-              where a source (RushLane, AutoPunditz, FADA) reported an actual
+              where a source (AutoPunditz, RushLane) reported an actual
               sales number for this bike.
             </p>
             <p>

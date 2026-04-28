@@ -33,9 +33,10 @@ hosted-frontend + local-backend deployment topology) see
 ## Features
 
 - **Brand-level "All models" view** — picking a brand lands on a
-  brand-summed chart by default (RushLane wholesale bars + FADA retail
-  line overlay + brand-summed Prophet forecast). Drill into a specific
-  bike for the per-bike view; pick "All" to zoom back out.
+  brand-summed chart by default (AutoPunditz brand totals as the
+  primary line + RushLane model-sum fallback + brand-level Prophet
+  forecast). Drill into a specific bike for the per-bike view; pick
+  "All" to zoom back out.
 - **Per-bike sales view** — monthly chart, peak / latest / total cards,
   staleness warnings, MoM deltas. Imputed months are visibly marked
   (lighter dashed bars) and historical anomalies surface as amber dots.
@@ -45,13 +46,12 @@ hosted-frontend + local-backend deployment topology) see
   gaps using priority `seasonal_naive → linear → ffill → median` so a
   few missed scrape months don't break the forecast.
 - **Per-source distribution dialog** — click any historical bar to see
-  every source that reported a value for that month (RushLane, FADA,
-  any future scraper or OCR'd source) with their values, the median
-  (used as the canonical chart value), and an at-a-glance spread
-  summary.
-- **Cross-source comparison** — RushLane (manufacturer-reported) vs FADA
-  (dealer registrations from Vahan) for each brand
-- **Compare tab** — overlay 2–4 bikes' monthly sales on one chart
+  every source that reported a value for that month (AutoPunditz,
+  RushLane, any future scraper or OCR'd source) with their values and
+  an at-a-glance spread summary. AutoPunditz is the canonical pick;
+  RushLane is the fallback.
+- **Compare section** — overlay 2–4 bikes' monthly sales on one chart,
+  embedded under the Sales Data tab and pre-anchored to the selected bike
 - **Owner Insights** — reviews from BikeWale, BikeDekho, ZigWheels, and
   Reddit r/IndianBikes (~50–70 reviews per popular bike vs. BikeWale alone's
   ~10), with AI-derived themes from the merged corpus
@@ -63,9 +63,9 @@ hosted-frontend + local-backend deployment topology) see
   - **BERTopic Pipeline** — embeddings → UMAP → HDBSCAN → c-TF-IDF, with
     optional Mistral 7B name refinement
   - **LLM Analysis** — Claude (API) or any local Ollama model
-- **One-click data refresh** — four-stage pipeline (RushLane discovery →
-  BikeWale reviews → BikeDekho/ZigWheels/Reddit reviews → FADA retail PDFs)
-  with live progress
+- **One-click data refresh** — five-stage pipeline (RushLane discovery →
+  BikeWale reviews → BikeDekho/ZigWheels/Reddit reviews → AutoPunditz prose +
+  brand totals → YouTube transcripts) with live progress
 - **`⌘K` command palette** to search bikes
 - **Light & dark mode**
 - **Setup tab** — live status pills for backend / Ollama / required models,
@@ -88,7 +88,8 @@ backend/                    FastAPI + SQLite (no ORM)
   bikedekho_scraper.py      BikeDekho user reviews (~30/page, with ratings)
   zigwheels_scraper.py      ZigWheels user reviews (numeric review IDs)
   reddit_scraper.py         r/IndianBikes search + comment-thread JSON
-  fada_scraper.py           FADA monthly retail PDF parser (pdfplumber)
+  autopunditz_scraper.py    AutoPunditz brand + aggregate post parser
+  youtube_scraper.py        YouTube transcript scraper (13 channels)
   themes_keyword.py         Method 1 — keyword bucket matching
   themes_tfidf.py           Method 2 — TF-IDF + KMeans
   themes_semantic.py        Method 3 — embeddings + HDBSCAN
@@ -125,8 +126,11 @@ frontend/                   Vite + React 19 + TypeScript
 - **ZigWheels** — user reviews with stable site-issued numeric IDs
 - **Reddit r/IndianBikes** — top-level comments on posts matching the bike's
   display name, filtered by length and upvote score
-- **FADA** — monthly Vehicle Retail Data PDFs. Brand-level only; comes from
-  Vahan dealer registrations
+- **AutoPunditz** — monthly per-brand prose + aggregate-OEM brand totals;
+  the canonical brand-level wholesale source
+- **YouTube** — auto-captioned transcripts from 13 Indian motorcycle
+  review channels (Autocar India, PowerDrift, MotorBeam, etc.) shown in
+  the Influencer Reviews tab
 
 ## Setup
 
@@ -171,15 +175,17 @@ are reachable.
 
 1. Open the dashboard. The catalogue is pre-seeded but no scraped data exists yet.
 2. Go to the **Data Refresh** tab and click **Refresh Everything**.
-3. ~5–10 minutes later you have monthly sales, BikeWale reviews, and FADA
-   retail data for ~50 bikes.
+3. ~5–10 minutes later you have monthly sales (RushLane + AutoPunditz),
+   BikeWale + BikeDekho + ZigWheels + Reddit reviews, and YouTube
+   transcripts for ~50 bikes.
 4. Pick a bike from the brand → model dropdowns (or `⌘K` for search).
 5. Try the *Owner Insights* tab and run different theming methods to compare.
 
 ## Tech stack
 
 **Backend:** FastAPI, SQLite, BeautifulSoup, requests, scikit-learn,
-hdbscan, umap-learn, pdfplumber, anthropic, ollama (HTTP), python-dotenv
+hdbscan, umap-learn, yt-dlp, youtube-transcript-api, anthropic, ollama
+(HTTP), python-dotenv
 
 **Frontend:** React 19, TypeScript, Vite, Tailwind CSS v4, shadcn/ui (Radix),
 Recharts, TanStack Query, Lucide, Sonner, cmdk
@@ -193,10 +199,11 @@ Recharts, TanStack Query, Lucide, Sonner, cmdk
   observed article styles; sites can change layouts at any time. Per-bike
   unit floors in `bike_catalogue.py` reject obvious misparses (e.g. *"125cc"*
   read as a sales count).
-- **RushLane wholesale vs FADA retail isn't a clean split.** FADA always =
-  retail (Vahan registrations). RushLane is mostly manufacturer dispatches
-  but varies by brand. The "Sales by source" card surfaces both rather than
-  asserting which is "correct".
+- **AutoPunditz vs RushLane.** AutoPunditz aggregate posts give a curated
+  brand total each month and are the canonical brand-level source. RushLane
+  is the model-level fallback — its model breakdowns are detailed, but
+  summing them depends on `bike_catalogue.py` being complete. The
+  distribution dialog surfaces both when they overlap.
 - **Reviews per source are capped at what each site shows on page 1**
   (BikeWale ~10, BikeDekho ~30, ZigWheels ~4, Reddit ~6 posts × top comments).
   Pagination is generally JS-driven or server-side disabled on these sites.
@@ -209,8 +216,8 @@ This project scrapes publicly accessible web pages for personal analysis. It
 respects `robots.txt` for the sites it touches and rate-limits aggressively.
 If you're a publisher and want your site removed, open an issue or pull request.
 
-Not affiliated with Yamaha, Honda, Hero, Bajaj, TVS, RushLane, BikeWale,
-BikeDekho, ZigWheels, Reddit, FADA, or any other entity mentioned.
+Not affiliated with Yamaha, Honda, Hero, Bajaj, TVS, RushLane, AutoPunditz,
+BikeWale, BikeDekho, ZigWheels, Reddit, or any other entity mentioned.
 
 ## License
 

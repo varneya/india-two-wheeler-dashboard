@@ -11,17 +11,18 @@ Four views of the system, scoped to the concerns they cover. All Mermaid blocks 
 
 ## 1. Data Engineering
 
-Six independent scrapers feed a single SQLite store. The `/api/refresh-all` endpoint orchestrates them as a 4-stage pipeline (RushLane discovery → BikeWale reviews → BikeDekho/ZigWheels/Reddit reviews → FADA PDF parse), with per-stage progress polled by the frontend. The `reviews` table tags each row with a `source` column so the four review streams co-exist and dedupe cleanly via `post_id`.
+Seven independent scrapers feed a single SQLite store. The `/api/refresh-all` endpoint orchestrates them as a 5-stage pipeline (RushLane discovery → BikeWale reviews → BikeDekho/ZigWheels/Reddit reviews → AutoPunditz prose + brand totals → YouTube transcripts), with per-stage progress polled by the frontend. AutoPunditz is the canonical brand-level wholesale source; RushLane is the model-level fallback.
 
 ```mermaid
 flowchart LR
     subgraph Sources["External Sources"]
         RL[(RushLane<br/>sales-breakup articles)]
+        AP[(AutoPunditz<br/>per-brand + aggregate posts)]
         BW[(BikeWale<br/>owner reviews)]
         BD[(BikeDekho<br/>user reviews + ratings)]
         ZW[(ZigWheels<br/>user reviews)]
         RD[(Reddit /r/IndianBikes<br/>JSON API)]
-        FADA[(FADA<br/>monthly PDFs)]
+        YT[(YouTube<br/>13 review channels)]
     end
 
     subgraph Catalogue["Catalogue / Whitelist"]
@@ -32,11 +33,12 @@ flowchart LR
     subgraph Scrapers["Scrapers (backend/)"]
         SC[scraper.py<br/>article discovery]
         EX[extractor.py<br/>per-bike unit regex]
+        APS[autopunditz_scraper.py<br/>prose + sitemap]
         RS[reviews_scraper.py<br/>BikeWale]
         BDS[bikedekho_scraper.py<br/>30 reviews/page + ratings]
         ZWS[zigwheels_scraper.py<br/>numeric review IDs]
         RDS[reddit_scraper.py<br/>top comments per post]
-        FS[fada_scraper.py<br/>pdfplumber]
+        YTS[youtube_scraper.py<br/>yt-dlp + transcript-api]
     end
 
     subgraph Orchestrator["Orchestrator"]
@@ -46,41 +48,48 @@ flowchart LR
 
     subgraph Store["SQLite — backend/sales.db"]
         T1[(bikes)]
-        T2[(sales_data<br/>wholesale)]
+        T2[(sales_data<br/>per-bike wholesale<br/>autopunditz + rushlane)]
         T3[("reviews<br/>source ∈ {bikewale,<br/>bikedekho, zigwheels, reddit}")]
-        T4[(retail_brand_sales<br/>FADA)]
-        T5[(scrape_log /<br/>reviews_log)]
+        T4[(wholesale_brand_sales<br/>autopunditz brand totals)]
+        T5[(video_transcripts<br/>+ video_bike_match)]
+        T6[(scrape_log /<br/>reviews_log)]
     end
 
     RA -->|stage 1| SC --> EX
     RA -->|stage 2| RS
     RA -->|stage 3| BDS & ZWS & RDS
-    RA -->|stage 4| FS
+    RA -->|stage 4| APS
+    RA -->|stage 5| YTS
 
     RL --> SC
     RL --> EX
+    AP --> APS
     BW --> RS
     BD --> BDS
     ZW --> ZWS
     RD --> RDS
-    FADA --> FS
+    YT --> YTS
 
     BC -.validates.- EX
     BC -.iterates.- RS
     BC -.iterates.- BDS
     BC -.iterates.- ZWS
     BC -.iterates.- RDS
+    BC -.matches.- YTS
+    BC -.matches.- APS
     BR -.lookup.- EX
 
     EX --> T1
     EX --> T2
-    EX --> T5
+    EX --> T6
+    APS --> T2
+    APS --> T4
     RS --> T3
     BDS --> T3
     ZWS --> T3
     RDS --> T3
-    RS --> T5
-    FS --> T4
+    RS --> T6
+    YTS --> T5
 
     RA --> ST
     T5 -.reads.- ST

@@ -38,7 +38,7 @@ Pick the row that matches what you want and install only those sections.
 
 | You want to... | Sections needed |
 |---|---|
-| Browse sales charts, reviews, FADA data | 1, 2, 3, 4 |
+| Browse sales charts, reviews, influencer videos | 1, 2, 3, 4 |
 | Run keyword / TF-IDF theming | 1, 2, 3, 4 |
 | Run semantic / BERTopic theming (local embeddings) | 1, 2, 3, 4, **5** |
 | Run LLM theming on your machine | 1, 2, 3, 4, **5** |
@@ -125,7 +125,6 @@ pip install \
   beautifulsoup4 \
   anthropic \
   python-dotenv \
-  pdfplumber \
   numpy \
   pandas \
   scikit-learn \
@@ -144,7 +143,6 @@ pip install \
 | `beautifulsoup4` | `scraper.py`, `reviews_scraper.py` | HTML parsing |
 | `anthropic` | `themes_llm.py` | Claude API client |
 | `python-dotenv` | `main.py` | Load `.env` |
-| `pdfplumber` | `fada_scraper.py` | Parse FADA monthly PDFs |
 | `numpy` | embeddings, clustering, forecast | Numerical arrays |
 | `pandas` | `forecast.py` | Period-indexed monthly series |
 | `scikit-learn` | `themes_tfidf.py`, fallback in semantic | TF-IDF, KMeans, silhouette |
@@ -331,7 +329,7 @@ rather curl manually:
 | LLM (Claude) | dashboard → Owner Insights → method = "LLM" → backend = Claude → run | Themes with sentiment + quotes |
 | LLM (Ollama) | dashboard → Owner Insights → method = "LLM" → backend = Ollama → run | Same, locally |
 
-First-time launch will show no data — click the **Data Refresh** tab and run a refresh to populate sales, reviews, and FADA data (~5–15 min).
+First-time launch will show no data — click the **Data Refresh** tab and run a refresh to populate sales (RushLane + AutoPunditz), reviews, and YouTube transcripts (~5–15 min).
 
 ---
 

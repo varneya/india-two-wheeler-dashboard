@@ -226,7 +226,7 @@ export function SetupTab() {
             <StatusPill state={backend} label={backend === 'ok' ? 'reachable' : 'not reachable'} />
             <div className="text-xs text-muted-foreground break-all">{API_BASE}</div>
             <div className="text-xs text-muted-foreground mt-1">
-              Required for sales charts, reviews, FADA data, all theming methods.
+              Required for sales charts, reviews, all theming methods.
             </div>
           </div>
 

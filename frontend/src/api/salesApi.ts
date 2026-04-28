@@ -110,18 +110,10 @@ export const fetchForecastStatus = (bikeId: string): Promise<ForecastStatus> =>
 // chart + metric components reuse with no branching.
 // ---------------------------------------------------------------------------
 
-export interface BrandSecondaryPoint {
-  month: string
-  units: number
-}
-
 export interface BrandSeriesResponse {
   brand_id: string
   history: import('../types/sales').SeriesHistoryPoint[]
   anomalies: import('../types/sales').SeriesAnomaly[]
-  // Optional secondary line — FADA retail values per month for the cross-source
-  // comparison overlay on the brand-level chart.
-  secondary_series: BrandSecondaryPoint[]
 }
 
 export const fetchBrandSalesSeries = (brandId: string): Promise<BrandSeriesResponse> =>

@@ -6,6 +6,7 @@ import { fetchBikes } from './api/bikesApi'
 import { BikeCommandPalette } from './components/BikeCommandPalette'
 import { BikePicker } from './components/BikePicker'
 import { CompareTab } from './components/CompareTab'
+import { InfluencerReviewsTab } from './components/InfluencerReviewsTab'
 import { InsightsTab } from './components/InsightsTab'
 import { MetricsCards } from './components/MetricsCards'
 import { RefreshButton } from './components/RefreshButton'
@@ -48,16 +49,17 @@ function brandIdFromBikeId(bikeId: string): string | null {
 
 const queryClient = new QueryClient()
 
-type Tab = 'sales' | 'insights' | 'refresh' | 'setup'
+type Tab = 'sales' | 'insights' | 'influencers' | 'refresh' | 'setup'
 
 const TAB_LABELS: Record<Tab, string> = {
   sales: 'Sales Data',
   insights: 'Owner Insights',
+  influencers: 'Influencer Reviews',
   refresh: 'Data Refresh',
   setup: 'Setup',
 }
 
-const TAB_ORDER: Tab[] = ['sales', 'insights', 'refresh', 'setup']
+const TAB_ORDER: Tab[] = ['sales', 'insights', 'influencers', 'refresh', 'setup']
 
 function ThemeToggle() {
   const { theme, toggle } = useTheme()
@@ -83,7 +85,6 @@ function Dashboard() {
     series,
     forecast,
     observedCount,
-    secondarySeries,
     isBrandMode,
     showForecast,
     setShowForecast,
@@ -260,11 +261,6 @@ function Dashboard() {
                   series={series}
                   forecast={forecast}
                   displayName={chartDisplayName}
-                  secondarySeries={
-                    secondarySeries
-                      ? { name: 'FADA Retail', color: '#f59e0b', values: secondarySeries }
-                      : undefined
-                  }
                 />
                 {/* Anomalies + imputation detail strip — each card hides
                     itself when there's nothing to show, so the row collapses
@@ -277,10 +273,7 @@ function Dashboard() {
                     <ImputedMonthsList history={series.history} />
                   </div>
                 )}
-                {/* Per-bike-only: collapsible raw historical rows. The
-                    brand-level view is itself the cross-source comparison,
-                    so we drop the bottom SourceComparisonCard from the
-                    per-bike view to remove redundancy. */}
+                {/* Per-bike-only: collapsible raw historical rows. */}
                 {!isBrandMode && sales.length > 0 && (
                   <>
                     <Collapsible>
@@ -334,6 +327,16 @@ function Dashboard() {
           ) : (
             <InsightsTab />
           )
+        )}
+
+        {/* Influencer Reviews — per-bike YouTube transcripts from the
+            curated motorcycle channels. Brand-mode lands on the empty
+            state since influencer videos are bike-specific. */}
+        {tab === 'influencers' && (
+          <InfluencerReviewsTab
+            bikeId={selectedBikeId}
+            bikeName={selectedBike?.display_name ?? selectedBikeId}
+          />
         )}
 
         {/* Data Refresh tab */}

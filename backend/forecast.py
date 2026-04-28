@@ -87,11 +87,10 @@ def build_complete_index(bike_id: str) -> pd.Series:
     through the most recent observed month. Missing months are NaN. Empty
     Series if there are no sales rows.
 
-    When a month has multiple source rows (e.g. RushLane wholesale +
-    AutoPunditz dispatch + an OCR'd infographic), the **median** is used as
-    the canonical value. Median is robust to outliers and treats sources as
-    independent estimates of truth. Use `build_distribution_payload()` if
-    you need the full per-source breakdown for visualisation.
+    Source priority when a month has multiple source rows: **AutoPunditz
+    wins**. Falls back to the median of the remaining sources when
+    AutoPunditz isn't present. This matches the brand-level promotion
+    where AutoPunditz aggregate posts are the canonical brand total.
     """
     sales = database.get_all_sales(bike_id=bike_id)
     if not sales:
@@ -103,15 +102,24 @@ def build_complete_index(bike_id: str) -> pd.Series:
     end = max(s["month"] for s in sales)
     idx = pd.period_range(start=_month_to_period(launch), end=_month_to_period(end), freq="M")
 
-    by_month: dict[pd.Period, list[float]] = {}
+    # Group rows by month, then pick: AutoPunditz value if present,
+    # else median of the remaining sources.
+    by_month: dict[pd.Period, dict[str, float]] = {}
     for s in sales:
         p = _month_to_period(s["month"])
-        by_month.setdefault(p, []).append(float(s["units_sold"]))
+        by_month.setdefault(p, {})[s["source"]] = float(s["units_sold"])
 
-    def _consolidate(vals: list[float]) -> float:
-        return float(np.median(vals)) if vals else float("nan")
+    def _consolidate(per_source: dict[str, float]) -> float:
+        if not per_source:
+            return float("nan")
+        if "autopunditz" in per_source:
+            return per_source["autopunditz"]
+        return float(np.median(list(per_source.values())))
 
-    values = [_consolidate(by_month.get(p, [])) if p in by_month else np.nan for p in idx]
+    values = [
+        _consolidate(by_month[p]) if p in by_month else np.nan
+        for p in idx
+    ]
     return pd.Series(values, index=idx, dtype="float64")
 
 
@@ -384,87 +392,75 @@ def build_series_payload(bike_id: str) -> dict:
 # RushLane sums across every bike in the brand.
 # ---------------------------------------------------------------------------
 
-def _brand_launch_month(brand_id: str) -> str | None:
-    """Earliest observed sales month across all bikes in the brand."""
-    sales = database.get_wholesale_brand_totals(brand_id)
-    if not sales:
-        return None
-    return min(s["month"] for s in sales)
-
-
 def build_brand_complete_index(brand_id: str) -> pd.Series:
-    """Brand-summed Period-indexed (freq='M') float Series spanning the
+    """Brand-monthly Period-indexed (freq='M') float Series spanning the
     earliest observed brand-month → most recent. Missing months are NaN.
 
-    Sums the RushLane (wholesale) values across every bike whose brand
-    matches. FADA brand-level retail values are NOT folded in here — they
-    surface separately in the chart as a secondary line and as a second row
-    in the per-month distribution dialog. This keeps the imputation +
-    Prophet pipeline driven by a single coherent source.
+    Source priority: **AutoPunditz brand totals win**. They come from
+    AutoPunditz's monthly aggregate posts (curated by the publication) and
+    don't depend on our bike_catalogue being complete. RushLane model-sums
+    fall in only for months AutoPunditz didn't cover — useful for years
+    where AutoPunditz hasn't backfilled.
     """
-    summed = database.get_wholesale_brand_totals(brand_id)
-    if not summed:
+    rushlane_summed = {
+        s["month"]: float(s["units"])
+        for s in database.get_wholesale_brand_totals(brand_id)
+    }
+    autopunditz_rows = {
+        r["month"]: float(r["units"])
+        for r in database.get_wholesale_brand_sales(
+            brand_id=brand_id, source="autopunditz"
+        )
+    }
+
+    if not autopunditz_rows and not rushlane_summed:
         return pd.Series(dtype="float64")
-    launch = _brand_launch_month(brand_id)
-    if not launch:
-        return pd.Series(dtype="float64")
-    end = max(s["month"] for s in summed)
+
+    # Merge: AutoPunditz overrides RushLane on overlap.
+    merged = {**rushlane_summed, **autopunditz_rows}
+
+    launch = min(merged)
+    end = max(merged)
     idx = pd.period_range(
         start=_month_to_period(launch), end=_month_to_period(end), freq="M"
     )
-    by_month = {_month_to_period(s["month"]): float(s["units"]) for s in summed}
-    values = [by_month.get(p, np.nan) for p in idx]
+    by_period = {_month_to_period(m): u for m, u in merged.items()}
+    values = [by_period.get(p, np.nan) for p in idx]
     return pd.Series(values, index=idx, dtype="float64")
 
 
 def build_brand_series_payload(brand_id: str) -> dict:
-    """Mirror of build_series_payload but for brand-summed series. Adds a
-    `secondary_series` block with FADA retail values per month so the chart
-    can draw the cross-source comparison as a second line. Each history row
-    also lists the per-source values (RushLane sum + FADA retail) so the
-    distribution dialog opens with the same shape as bike-level."""
+    """Mirror of build_series_payload but for brand-summed series. Each
+    history row lists the per-source values (AutoPunditz first, then
+    RushLane) so the distribution dialog opens with the same shape as
+    bike-level."""
     raw = build_brand_complete_index(brand_id)
     if raw.empty:
         return {
             "brand_id": brand_id,
             "history": [],
             "anomalies": [],
-            "secondary_series": [],
         }
     imputed_series, meta = impute(raw)
     anomalies = detect_anomalies(imputed_series)
     anomaly_by_month = {a["month"]: a for a in anomalies}
 
-    rushlane_summed = {
-        s["month"]: int(s["units"])
-        for s in database.get_wholesale_brand_totals(brand_id)
-    }
-    fada_rows = {
-        r["month"]: int(r["units"])
-        for r in database.get_retail_brand_sales(brand_id=brand_id)
-    }
-    # AutoPunditz brand totals come from the monthly aggregate posts
-    # (wholesale_brand_sales table). We treat the explicit brand-total as
-    # authoritative for the brand chart — model-level autopunditz coverage
-    # from per-brand posts is partial, so summing it would understate.
     autopunditz_rows = {
         r["month"]: int(r["units"])
         for r in database.get_wholesale_brand_sales(
             brand_id=brand_id, source="autopunditz"
         )
     }
+    rushlane_summed = {
+        s["month"]: int(s["units"])
+        for s in database.get_wholesale_brand_totals(brand_id)
+    }
 
     history_payload: list[dict] = []
     for i, m in enumerate(meta):
         v = imputed_series.iloc[i]
         sources = []
-        rl = rushlane_summed.get(m["month"])
-        if rl is not None:
-            sources.append({
-                "source": "rushlane",
-                "units_sold": rl,
-                "source_url": None,
-            })
+        # AutoPunditz first — it's the brand-level primary source now.
         ap = autopunditz_rows.get(m["month"])
         if ap is not None:
             sources.append({
@@ -472,11 +468,11 @@ def build_brand_series_payload(brand_id: str) -> dict:
                 "units_sold": ap,
                 "source_url": None,
             })
-        fada = fada_rows.get(m["month"])
-        if fada is not None:
+        rl = rushlane_summed.get(m["month"])
+        if rl is not None:
             sources.append({
-                "source": "fada_retail",
-                "units_sold": fada,
+                "source": "rushlane",
+                "units_sold": rl,
                 "source_url": None,
             })
         units_only = [s["units_sold"] for s in sources]
@@ -496,16 +492,10 @@ def build_brand_series_payload(brand_id: str) -> dict:
             "sources": sources,
         })
 
-    secondary_payload = [
-        {"month": m, "units": int(u)}
-        for m, u in sorted(fada_rows.items())
-    ]
-
     return {
         "brand_id": brand_id,
         "history": history_payload,
         "anomalies": anomalies,
-        "secondary_series": secondary_payload,
     }
 
 

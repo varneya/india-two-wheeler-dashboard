@@ -4,14 +4,15 @@ export interface SalesDataPoint {
   source_url?: string;
   confidence?: string;
   scraped_at: string;
-  source?: string;          // 'rushlane' | 'autopunditz' | 'fada' | ...
+  source?: string;          // 'autopunditz' | 'rushlane' | ...
 }
 
 // Display metadata per source — used by table pills, chart legends, etc.
+// AutoPunditz is the primary brand-level source; RushLane is the secondary
+// model-level source. Listed in priority order.
 export const SOURCE_META: Record<string, { label: string; color: string }> = {
-  rushlane:    { label: 'RushLane',    color: 'bg-blue-900/40 text-blue-300 border-blue-700/50' },
   autopunditz: { label: 'AutoPunditz', color: 'bg-violet-900/40 text-violet-300 border-violet-700/50' },
-  fada:        { label: 'FADA Retail', color: 'bg-amber-900/40 text-amber-300 border-amber-700/50' },
+  rushlane:    { label: 'RushLane',    color: 'bg-blue-900/40 text-blue-300 border-blue-700/50' },
   bikedekho:   { label: 'BikeDekho',   color: 'bg-emerald-900/40 text-emerald-300 border-emerald-700/50' },
   youtube:     { label: 'YouTube',     color: 'bg-red-900/40 text-red-300 border-red-700/50' },
 }
@@ -38,7 +39,7 @@ export interface RefreshStatus {
 
 // One per-source value reported for a given (bike, month).
 export interface MonthSourceValue {
-  source: string;           // 'rushlane' | 'autopunditz' | 'fada' | OCR-derived | ...
+  source: string;           // 'autopunditz' | 'rushlane' | OCR-derived | ...
   units_sold: number;
   source_url: string | null;
 }

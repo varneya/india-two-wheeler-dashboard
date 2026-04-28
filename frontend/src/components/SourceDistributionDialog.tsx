@@ -17,10 +17,8 @@ interface Props {
 }
 
 const SOURCE_LABELS: Record<string, string> = {
-  rushlane: 'RushLane',
   autopunditz: 'AutoPunditz',
-  fada: 'FADA Retail',
-  fada_retail: 'FADA Retail',
+  rushlane: 'RushLane',
   bikedekho: 'BikeDekho',
   ht_auto: 'HT Auto',
   autocarpro_ocr: 'AutoCarPro (OCR)',
@@ -104,7 +102,9 @@ function DistributionBody({ point }: { point: SeriesHistoryPoint }) {
         </div>
         {!single && (
           <Badge variant="secondary" className="rounded-full">
-            median across {point.n_sources} sources
+            {point.sources.some(s => s.source === 'autopunditz')
+              ? `AutoPunditz · primary of ${point.n_sources}`
+              : `median across ${point.n_sources} sources`}
           </Badge>
         )}
         {single && (

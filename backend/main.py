@@ -1,3 +1,4 @@
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import asynccontextmanager
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Query
@@ -23,7 +24,6 @@ import themes_runner
 import themes_keyword
 import bike_registry
 import bike_catalogue
-import fada_scraper
 import autopunditz_scraper
 import youtube_scraper
 import url_cache
@@ -134,49 +134,6 @@ def list_brand_models(brand_id: str):
             "has_reviews": (db and db.get("has_reviews")) or False,
         })
     return out
-
-
-@app.get("/api/brands/{brand_id}/wholesale-vs-retail")
-def wholesale_vs_retail(brand_id: str):
-    """Side-by-side monthly comparison for a brand from two data sources.
-
-    Note: the route name is historical. The actual data is "RushLane reported"
-    vs "FADA retail (Vahan registrations)". RushLane's source varies by brand,
-    so we no longer interpret the difference as inventory build/draw.
-
-    - wholesale (kept name for backwards-compat): SUM of model-level RushLane
-      rows for the brand, per month.
-    - retail: FADA brand-level retail rows, per month.
-    - source_gap: signed difference (RushLane − FADA). The frontend renders the
-      absolute value with neutral framing.
-    """
-    if brand_id not in bike_catalogue.CATALOGUE:
-        raise HTTPException(404, detail="brand not found")
-
-    wholesale = database.get_wholesale_brand_totals(brand_id)
-    retail = database.get_retail_brand_sales(brand_id=brand_id, source="fada_retail")
-
-    months = sorted(set([w["month"] for w in wholesale] + [r["month"] for r in retail]))
-    w_by_month = {w["month"]: w["units"] for w in wholesale}
-    r_by_month = {r["month"]: r["units"] for r in retail}
-
-    series = []
-    for m in months:
-        w = w_by_month.get(m)
-        r = r_by_month.get(m)
-        gap = (w - r) if (w is not None and r is not None) else None
-        series.append({
-            "month": m,
-            "wholesale": w,
-            "retail": r,
-            "source_gap": gap,
-        })
-
-    return {
-        "brand_id": brand_id,
-        "brand_display": bike_catalogue.BRANDS[brand_id]["display"],
-        "series": series,
-    }
 
 
 @app.get("/api/bikes")
@@ -326,7 +283,7 @@ _refresh_all_lock = threading.Lock()
 _refresh_all_running: bool = False
 _refresh_all_state: dict = {
     "running": False,
-    "stage": "idle",            # idle | discovering | reviews | other_sources | autopunditz | youtube | retail | done | error
+    "stage": "idle",            # idle | discovering | reviews | other_sources | autopunditz | youtube | done | error
     "started_at": None,
     "finished_at": None,
     "force": False,             # set when caller invoked /api/refresh-all?force=true
@@ -354,11 +311,7 @@ _refresh_all_state: dict = {
     "youtube": {                # YouTube transcripts (Stage 6)
         "channels_total": 0, "channels_done": 0,
         "current_channel": None,
-        "videos_kept": 0, "shadow_rows_added": 0,
-        "cached": 0, "fetched": 0,
-    },
-    "retail": {                 # FADA monthly retail PDFs
-        "pdfs_total": 0, "pdfs_done": 0, "rows_added": 0,
+        "videos_kept": 0,
         "cached": 0, "fetched": 0,
     },
     "error": None,
@@ -409,11 +362,7 @@ def _run_refresh_all(force: bool = False):
         _refresh_all_state["youtube"] = {
             "channels_total": 0, "channels_done": 0,
             "current_channel": None,
-            "videos_kept": 0, "shadow_rows_added": 0,
-            "cached": 0, "fetched": 0,
-        }
-        _refresh_all_state["retail"] = {
-            "pdfs_total": 0, "pdfs_done": 0, "rows_added": 0,
+            "videos_kept": 0,
             "cached": 0, "fetched": 0,
         }
     # Reset thread-local cache counters before stage 1 starts.
@@ -428,7 +377,6 @@ def _run_refresh_all(force: bool = False):
             _refresh_all_state[stage_key]["fetched"] = snap["fetched"]
 
     total_reviews = 0
-    total_retail_rows = 0
     try:
         # Stage 1 — discovery
         _do_discovery_pass(_refresh_all_state["discovery"], _refresh_all_lock)
@@ -441,10 +389,11 @@ def _run_refresh_all(force: bool = False):
         with _refresh_all_lock:
             _refresh_all_state["reviews"]["bikes_total"] = len(bikes)
 
-        for bike in bikes:
-            with _refresh_all_lock:
-                _refresh_all_state["reviews"]["current_bike"] = bike["display_name"]
-                _refresh_all_state["reviews"]["current_bike_id"] = bike["id"]
+        # Parallelize per-bike review fetches: each bike scrape is a network
+        # round-trip to BikeWale + a few SQLite upserts (isolated by bike_id),
+        # so 4-way concurrency safely overlaps the network waits without
+        # contending on writes (WAL mode handles the brief writer overlap).
+        def _scrape_one_bikewale(bike: dict) -> tuple[dict, int]:
             try:
                 reviews = scrape_reviews_for_bike(bike)
                 for r in reviews:
@@ -457,13 +406,21 @@ def _run_refresh_all(force: bool = False):
                         overall_rating=r.get("overall_rating"),
                         thread_url=r.get("thread_url"),
                     )
-                total_reviews += len(reviews)
+                return bike, len(reviews)
             except Exception as bike_err:
-                # Don't blow up the whole refresh if one bike fails
                 print(f"[refresh-all] {bike['id']} review scrape failed: {bike_err}")
-            with _refresh_all_lock:
-                _refresh_all_state["reviews"]["bikes_done"] += 1
-                _refresh_all_state["reviews"]["reviews_added"] = total_reviews
+                return bike, 0
+
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            futures = [pool.submit(_scrape_one_bikewale, b) for b in bikes]
+            for fut in as_completed(futures):
+                bike, n = fut.result()
+                total_reviews += n
+                with _refresh_all_lock:
+                    _refresh_all_state["reviews"]["bikes_done"] += 1
+                    _refresh_all_state["reviews"]["reviews_added"] = total_reviews
+                    _refresh_all_state["reviews"]["current_bike"] = bike["display_name"]
+                    _refresh_all_state["reviews"]["current_bike_id"] = bike["id"]
 
         database.log_reviews_run(total_reviews, None)
         _flush_cache_stats("reviews")
@@ -476,11 +433,11 @@ def _run_refresh_all(force: bool = False):
             _refresh_all_state["stage"] = "other_sources"
             _refresh_all_state["other_sources"]["bikes_total"] = len(bikes)
 
-        for bike in bikes:
-            with _refresh_all_lock:
-                _refresh_all_state["other_sources"]["current_bike"] = bike["display_name"]
-                _refresh_all_state["other_sources"]["current_bike_id"] = bike["id"]
-
+        # Same per-bike parallelization as Stage 2 — each bike fans out to
+        # 3 sub-scrapers (BikeDekho / ZigWheels / Reddit) running serially
+        # within its own worker, but bikes themselves run 4-wide.
+        def _scrape_one_other(bike: dict) -> tuple[dict, dict[str, int]]:
+            counts = {"bikedekho_added": 0, "zigwheels_added": 0, "reddit_added": 0}
             for source_key, scraper in (
                 ("bikedekho_added", scrape_bikedekho_for_bike),
                 ("zigwheels_added", scrape_zigwheels_for_bike),
@@ -498,21 +455,30 @@ def _run_refresh_all(force: bool = False):
                             overall_rating=r.get("overall_rating"),
                             thread_url=r.get("thread_url"),
                         )
-                    with _refresh_all_lock:
-                        _refresh_all_state["other_sources"][source_key] += len(new_reviews)
-                    total_reviews += len(new_reviews)
+                    counts[source_key] = len(new_reviews)
                 except Exception as src_err:
                     print(f"[refresh-all] {bike['id']} {source_key.split('_')[0]} failed: {src_err}")
+            return bike, counts
 
-            with _refresh_all_lock:
-                _refresh_all_state["other_sources"]["bikes_done"] += 1
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            futures = [pool.submit(_scrape_one_other, b) for b in bikes]
+            for fut in as_completed(futures):
+                bike, counts = fut.result()
+                added_total = sum(counts.values())
+                total_reviews += added_total
+                with _refresh_all_lock:
+                    for k, v in counts.items():
+                        _refresh_all_state["other_sources"][k] += v
+                    _refresh_all_state["other_sources"]["bikes_done"] += 1
+                    _refresh_all_state["other_sources"]["current_bike"] = bike["display_name"]
+                    _refresh_all_state["other_sources"]["current_bike_id"] = bike["id"]
 
         _flush_cache_stats("other_sources")
 
         # Stage 4 — AutoPunditz: per-brand prose -> model rows in sales_data,
         # plus monthly aggregate posts -> brand rows in wholesale_brand_sales.
         # Wrapped in try/except so a sitemap or fetch failure doesn't abort
-        # the whole refresh; FADA still runs.
+        # the rest of the pipeline.
         with _refresh_all_lock:
             _refresh_all_state["stage"] = "autopunditz"
         try:
@@ -579,99 +545,59 @@ def _run_refresh_all(force: bool = False):
 
         _flush_cache_stats("autopunditz")
 
-        # Stage 6 — YouTube transcripts. For each channel in
-        # youtube_scraper.CHANNELS, list recent videos via yt-dlp, match
-        # bike-keywords against title+description, fetch English captions
-        # for matches, store full transcript + per-(video, bike) shadow
-        # rows in `reviews` so themes/embeddings pick them up unchanged.
+        # Stage 5 — YouTube transcripts. Per-channel work is fully isolated
+        # (each channel writes to its own cursor row, and video_ids never
+        # collide across channels), so we run channels 4-wide. The biggest
+        # cold-run win in the pipeline.
         with _refresh_all_lock:
             _refresh_all_state["stage"] = "youtube"
             _refresh_all_state["youtube"]["channels_total"] = len(youtube_scraper.CHANNELS)
+
+        def _scrape_one_channel(ch: dict) -> tuple[dict, int]:
+            try:
+                candidates = youtube_scraper.scrape_channel(
+                    ch,
+                    skip_seen_video=database.video_transcript_exists,
+                    get_cursor=database.get_youtube_channel_cursor,
+                    set_cursor=database.upsert_youtube_channel_cursor,
+                )
+                for v in candidates:
+                    database.upsert_video_transcript(
+                        video_id=v["video_id"],
+                        channel_handle=v["channel_handle"],
+                        channel_name=v["channel_name"],
+                        video_url=v["video_url"],
+                        title=v["title"],
+                        description=v.get("description"),
+                        duration_s=v.get("duration_s"),
+                        published_at=v.get("published_at"),
+                        transcript=v["transcript"],
+                        language=v.get("language"),
+                    )
+                    # Per-(video, bike) match rows so the Influencer Reviews
+                    # tab can list videos for each bike.
+                    for match in v["matched_bikes"]:
+                        database.upsert_video_bike_match(v["video_id"], match["bike_id"])
+                return ch, len(candidates)
+            except Exception as ce:
+                print(f"[refresh-all] youtube channel {ch['handle']} failed: {ce}")
+                return ch, 0
+
         try:
             yt_videos_kept = 0
-            yt_shadow_rows = 0
-
-            for ch in youtube_scraper.CHANNELS:
-                with _refresh_all_lock:
-                    _refresh_all_state["youtube"]["current_channel"] = ch["name"]
-                try:
-                    candidates = youtube_scraper.scrape_channel(
-                        ch,
-                        skip_seen_video=database.video_transcript_exists,
-                        get_cursor=database.get_youtube_channel_cursor,
-                        set_cursor=database.upsert_youtube_channel_cursor,
-                    )
-                    for v in candidates:
-                        database.upsert_video_transcript(
-                            video_id=v["video_id"],
-                            channel_handle=v["channel_handle"],
-                            channel_name=v["channel_name"],
-                            video_url=v["video_url"],
-                            title=v["title"],
-                            description=v.get("description"),
-                            duration_s=v.get("duration_s"),
-                            published_at=v.get("published_at"),
-                            transcript=v["transcript"],
-                            language=v.get("language"),
-                        )
-                        # Build a single review-style blob per (video, bike).
-                        # Cap at TRANSCRIPT_REVIEW_CAP so embeddings aren't
-                        # disproportionately influenced by long videos.
-                        body = v["transcript"][:youtube_scraper.TRANSCRIPT_REVIEW_CAP]
-                        for match in v["matched_bikes"]:
-                            bike_id = match["bike_id"]
-                            database.upsert_video_bike_match(v["video_id"], bike_id)
-                            shadow_post_id = f"youtube:{v['video_id']}:{bike_id}"
-                            database.upsert_review(
-                                bike_id=bike_id,
-                                source="youtube",
-                                post_id=shadow_post_id,
-                                username=v["channel_name"],
-                                review_text=f"{v['title']}\n\n{body}",
-                                overall_rating=None,
-                                thread_url=v["video_url"],
-                            )
-                            yt_shadow_rows += 1
-                    yt_videos_kept += len(candidates)
-                except Exception as ce:
-                    print(f"[refresh-all] youtube channel {ch['handle']} failed: {ce}")
-                with _refresh_all_lock:
-                    _refresh_all_state["youtube"]["channels_done"] += 1
-                    _refresh_all_state["youtube"]["videos_kept"] = yt_videos_kept
-                    _refresh_all_state["youtube"]["shadow_rows_added"] = yt_shadow_rows
+            with ThreadPoolExecutor(max_workers=4) as pool:
+                futures = [pool.submit(_scrape_one_channel, ch) for ch in youtube_scraper.CHANNELS]
+                for fut in as_completed(futures):
+                    ch, kept = fut.result()
+                    yt_videos_kept += kept
+                    with _refresh_all_lock:
+                        _refresh_all_state["youtube"]["channels_done"] += 1
+                        _refresh_all_state["youtube"]["videos_kept"] = yt_videos_kept
+                        _refresh_all_state["youtube"]["current_channel"] = ch["name"]
         except Exception as ye:
             print(f"[refresh-all] youtube stage failed: {ye}")
 
         _flush_cache_stats("youtube")
-
-        # Stage 7 — FADA monthly retail PDFs (brand-level)
-        with _refresh_all_lock:
-            _refresh_all_state["stage"] = "retail"
-        try:
-            pdfs = fada_scraper.discover_monthly_pdfs(limit=24)
-            with _refresh_all_lock:
-                _refresh_all_state["retail"]["pdfs_total"] = len(pdfs)
-            for pdf in pdfs:
-                oems = fada_scraper.fetch_and_parse_pdf(pdf["url"], pdf["month"])
-                for entry in oems:
-                    brand_id = fada_scraper._oem_to_brand_id(entry["oem"])
-                    if not brand_id:
-                        continue
-                    database.upsert_retail_brand_sale(
-                        brand_id=brand_id,
-                        month=pdf["month"],
-                        units=entry["units"],
-                        source_url=pdf["url"],
-                    )
-                    total_retail_rows += 1
-                with _refresh_all_lock:
-                    _refresh_all_state["retail"]["pdfs_done"] += 1
-                    _refresh_all_state["retail"]["rows_added"] = total_retail_rows
-        except Exception as fe:
-            # Don't fail the whole refresh if FADA breaks; just record it
-            print(f"[refresh-all] FADA stage failed: {fe}")
-
-        _flush_cache_stats("retail")
 
         finished_iso = __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat()
         with _refresh_all_lock:
@@ -726,7 +652,6 @@ def refresh_all_status():
             "other_sources": dict(_refresh_all_state.get("other_sources") or {}),
             "autopunditz": dict(_refresh_all_state.get("autopunditz") or {}),
             "youtube": dict(_refresh_all_state.get("youtube") or {}),
-            "retail": dict(_refresh_all_state.get("retail") or {}),
             "error": _refresh_all_state["error"],
         }
 
@@ -970,9 +895,9 @@ def _do_brand_forecast(brand_id: str, horizon: int, interval_width: float):
 
 @app.get("/api/brands/{brand_id}/sales/series")
 def get_brand_sales_series(brand_id: str):
-    """Brand-level enriched history (RushLane sums by month + FADA per-month
-    secondary series). Same shape as the bike endpoint plus a `secondary_series`
-    block that the chart renders as the cross-source FADA line."""
+    """Brand-level enriched history. AutoPunditz brand totals are the primary
+    line (when available); RushLane model-sums fall in for any month
+    AutoPunditz didn't report. Same shape as the bike endpoint."""
     return forecast_mod.build_brand_series_payload(brand_id)
 
 
@@ -1038,6 +963,21 @@ def get_brand_forecast_status(brand_id: str):
         "started_at": state.get("started_at"),
         "finished_at": state.get("finished_at"),
     }
+
+
+# ===========================================================================
+# Bike-scoped influencer videos (Influencer Reviews tab)
+# ===========================================================================
+
+@app.get("/api/bikes/{bike_id}/influencer-videos")
+def get_bike_influencer_videos(bike_id: str, include_transcript: bool = True):
+    """List YouTube videos matched to this bike, newest first. Each entry
+    carries channel name + video URL + (optionally) full transcript so the
+    Influencer Reviews tab can render the per-bike video list and an
+    expandable transcript without follow-up API calls."""
+    return database.get_video_transcripts_for_bike(
+        bike_id, include_transcript=include_transcript,
+    )
 
 
 # ===========================================================================

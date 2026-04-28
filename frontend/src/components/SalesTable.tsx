@@ -97,9 +97,8 @@ export function SalesTable({ sales }: Props) {
                       {row.source && (
                         <Badge
                           variant={
-                            row.source === 'rushlane' ? 'info'
-                            : row.source === 'fada_retail' ? 'warning'
-                            : row.source === 'autopunditz' ? 'secondary'
+                            row.source === 'autopunditz' ? 'secondary'
+                            : row.source === 'rushlane' ? 'info'
                             : 'outline'
                           }
                           className="text-[10px] px-1.5 py-0.5"

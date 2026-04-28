@@ -35,6 +35,13 @@ def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
 
 def init_db():
     with get_conn() as conn:
+        # Enable WAL so the parallel refresh stages (multiple worker threads
+        # writing per-bike rows concurrently) don't block each other on a
+        # single writer lock. WAL allows N readers + 1 writer concurrently
+        # and survives restarts. PRAGMA is idempotent.
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+
         # ------------- Base tables (idempotent CREATE IF NOT EXISTS) -------------
         conn.executescript("""
             CREATE TABLE IF NOT EXISTS bikes (
@@ -87,22 +94,10 @@ def init_db():
                 themes     TEXT NOT NULL,
                 run_at     TEXT NOT NULL
             );
-            -- Brand-level monthly retail data (FADA). Sits alongside sales_data
-            -- (which is model-level wholesale). Kept separate so model-level
-            -- queries don't accidentally aggregate over brand rows.
-            CREATE TABLE IF NOT EXISTS retail_brand_sales (
-                id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                brand_id    TEXT NOT NULL,
-                month       TEXT NOT NULL,
-                units       INTEGER NOT NULL,
-                source      TEXT NOT NULL DEFAULT 'fada_retail',
-                source_url  TEXT,
-                scraped_at  TEXT NOT NULL,
-                UNIQUE(brand_id, month, source)
-            );
-            -- Brand-level monthly WHOLESALE data (AutoPunditz aggregate posts).
-            -- Same shape as retail_brand_sales but semantically wholesale, so we
-            -- keep them separate to avoid mixing dispatch and registration numbers.
+            -- Brand-level monthly wholesale data from AutoPunditz aggregate
+            -- posts. Distinct from `sales_data` (model-level) — this table
+            -- holds the curated brand TOTAL each month, used as the primary
+            -- line on the brand-level chart.
             CREATE TABLE IF NOT EXISTS wholesale_brand_sales (
                 id          INTEGER PRIMARY KEY AUTOINCREMENT,
                 brand_id    TEXT NOT NULL,
@@ -228,6 +223,24 @@ def init_db():
                 DROP TABLE sales_data;
                 ALTER TABLE sales_data_new RENAME TO sales_data;
             """)
+
+        # ------------- Drop retail_brand_sales (FADA) ----------------------
+        # FADA was removed entirely; the table is no longer maintained and
+        # nothing reads it. Drop on first init after the upgrade so the
+        # schema matches the code.
+        if _table_exists(conn, "retail_brand_sales"):
+            conn.execute("DROP TABLE retail_brand_sales")
+            print("[migrate] dropped retail_brand_sales (FADA removed)")
+
+        # ------------- Drop YouTube shadow rows from `reviews` -------------
+        # YouTube transcripts are no longer shadow-inserted into `reviews`.
+        # Existing rows are harmless (not refreshed) but skew the themes
+        # pipeline output, so we delete them here as a one-shot cleanup.
+        deleted_yt = conn.execute(
+            "DELETE FROM reviews WHERE source = 'youtube'"
+        ).rowcount
+        if deleted_yt:
+            print(f"[migrate] removed {deleted_yt} legacy youtube shadow rows from reviews")
 
         # ------------- Add source column to sales_data (idempotent) -------------
         # Lets us tag rows by where they came from (rushlane, autopunditz, ...).
@@ -607,53 +620,6 @@ def get_last_reviews_log() -> dict | None:
 
 
 # ---------------------------------------------------------------------------
-# Retail brand sales (FADA)
-# ---------------------------------------------------------------------------
-
-def upsert_retail_brand_sale(
-    brand_id: str,
-    month: str,
-    units: int,
-    source_url: str | None = None,
-    source: str = "fada_retail",
-):
-    """Upsert a brand-level monthly retail row (e.g. from FADA)."""
-    now = datetime.now(timezone.utc).isoformat()
-    with get_conn() as conn:
-        conn.execute(
-            """INSERT INTO retail_brand_sales (brand_id, month, units, source, source_url, scraped_at)
-               VALUES (?, ?, ?, ?, ?, ?)
-               ON CONFLICT(brand_id, month, source) DO UPDATE SET
-                 units=excluded.units,
-                 source_url=excluded.source_url,
-                 scraped_at=excluded.scraped_at""",
-            (brand_id, month, units, source, source_url, now),
-        )
-
-
-def get_retail_brand_sales(brand_id: str | None = None,
-                           source: str | None = None) -> list[dict]:
-    """Return retail rows. Filter by brand_id and/or source."""
-    with get_conn() as conn:
-        clauses = []
-        params: list = []
-        if brand_id:
-            clauses.append("brand_id = ?")
-            params.append(brand_id)
-        if source:
-            clauses.append("source = ?")
-            params.append(source)
-        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
-        rows = conn.execute(
-            f"""SELECT brand_id, month, units, source, source_url, scraped_at
-                FROM retail_brand_sales {where}
-                ORDER BY month ASC""",
-            params,
-        ).fetchall()
-    return [dict(r) for r in rows]
-
-
-# ---------------------------------------------------------------------------
 # Wholesale brand sales (AutoPunditz aggregate)
 # ---------------------------------------------------------------------------
 
@@ -875,12 +841,21 @@ def upsert_video_bike_match(video_id: str, bike_id: str):
         )
 
 
-def get_video_transcripts_for_bike(bike_id: str) -> list[dict]:
-    """List videos matched to this bike (newest first)."""
+def get_video_transcripts_for_bike(
+    bike_id: str, include_transcript: bool = True
+) -> list[dict]:
+    """List videos matched to this bike (newest first). When
+    `include_transcript` is True, the full transcript blob is returned
+    alongside metadata — used by the Influencer Reviews tab."""
+    cols = (
+        "v.video_id, v.channel_handle, v.channel_name, v.video_url, "
+        "v.title, v.description, v.published_at, v.duration_s, v.language, "
+        "v.fetched_at"
+        + (", v.transcript" if include_transcript else "")
+    )
     with get_conn() as conn:
         rows = conn.execute(
-            """SELECT v.video_id, v.channel_handle, v.channel_name, v.video_url,
-                      v.title, v.published_at, v.duration_s, v.language
+            f"""SELECT {cols}
                FROM video_transcripts v
                JOIN video_bike_match m ON v.video_id = m.video_id
                WHERE m.bike_id = ?
@@ -996,17 +971,33 @@ def get_themes_status(bike_id: str | None = None) -> dict:
 # Review embedding cache
 # ---------------------------------------------------------------------------
 
+_SOURCE_DISPLAY_ORDER = ["autopunditz", "rushlane"]
+
+
+def _source_sort_key(source: str) -> tuple[int, str]:
+    """Sort key that puts AutoPunditz first, RushLane second, then any
+    other source alphabetically. Used for consistent ordering of the
+    distribution popover in both bike-level and brand-level charts."""
+    if source in _SOURCE_DISPLAY_ORDER:
+        return (_SOURCE_DISPLAY_ORDER.index(source), source)
+    return (len(_SOURCE_DISPLAY_ORDER), source)
+
+
 def get_sales_by_month_with_sources(bike_id: str) -> list[dict]:
     """Per-month breakdown showing every source that reported a value for
     this bike. Used by the unified Sales view's distribution popover and by
-    forecast.build_complete_index for median consolidation across sources.
+    forecast.build_complete_index when picking the canonical value.
+
+    Sources within each month are ordered AutoPunditz first, RushLane
+    second, then anything else alphabetically — matches the brand-level
+    promotion where AutoPunditz is the primary.
 
     Returns rows in chronological order, one per (bike_id, month):
         [{
             "month": "2026-03",
             "sources": [
-                {"source": "rushlane", "units_sold": 13500, "source_url": "..."},
-                ...
+                {"source": "autopunditz", "units_sold": 13500, "source_url": "..."},
+                {"source": "rushlane",    "units_sold": 13500, "source_url": "..."},
             ],
         }, ...]
     """
@@ -1015,7 +1006,7 @@ def get_sales_by_month_with_sources(bike_id: str) -> list[dict]:
             """SELECT month, source, units_sold, source_url
                FROM sales_data
                WHERE bike_id = ?
-               ORDER BY month ASC, source ASC""",
+               ORDER BY month ASC""",
             (bike_id,),
         ).fetchall()
     by_month: dict[str, list[dict]] = {}
@@ -1026,7 +1017,11 @@ def get_sales_by_month_with_sources(bike_id: str) -> list[dict]:
             "units_sold": int(r["units_sold"]),
             "source_url": r["source_url"],
         })
-    return [{"month": m, "sources": sources} for m, sources in by_month.items()]
+    out = []
+    for m, sources in by_month.items():
+        sources.sort(key=lambda s: _source_sort_key(s["source"]))
+        out.append({"month": m, "sources": sources})
+    return out
 
 
 def get_cached_embeddings(post_ids: list[str], model: str) -> dict[str, bytes]:
