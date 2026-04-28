@@ -298,21 +298,26 @@ function Dashboard() {
                   </>
                 )}
 
-                {/* Compare section — used to be a separate tab. Embedded
-                    here so visitors don't have to switch contexts to put
-                    this bike against the rest of the catalogue. */}
-                <div className="mt-4 pt-6 border-t border-border/40">
-                  <div className="mb-4">
-                    <h2 className="text-lg font-semibold text-foreground">
-                      How does this compare?
-                    </h2>
-                    <p className="text-sm text-muted-foreground mt-1">
-                      Pick another bike (or a few) to overlay them on the
-                      same chart and see where this one sits.
-                    </p>
+                {/* Compare section — only shown in per-bike mode (it's
+                    always anchored to the bike you're viewing, so brand
+                    "All models" mode has nothing meaningful to anchor on
+                    and the section gets hidden entirely). */}
+                {!isBrandMode && selectedBikeId && (
+                  <div className="mt-4 pt-6 border-t border-border/40">
+                    <div className="mb-4">
+                      <h2 className="text-lg font-semibold text-foreground">
+                        How does this compare?
+                      </h2>
+                      <p className="text-sm text-muted-foreground mt-1">
+                        We've put <strong className="text-foreground">
+                          {selectedBike?.display_name ?? selectedBikeId}
+                        </strong> on the chart — pick up to 3 more bikes to
+                        overlay and see where this one sits.
+                      </p>
+                    </div>
+                    <CompareTab anchorBikeId={selectedBikeId} />
                   </div>
-                  <CompareTab />
-                </div>
+                )}
               </>
             )}
           </>

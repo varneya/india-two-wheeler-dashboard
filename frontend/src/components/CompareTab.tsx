@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
 import { X } from 'lucide-react'
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import {
   CartesianGrid,
   Legend,
@@ -30,10 +30,32 @@ function formatMonth(m: string) {
   return `${names[idx]} '${y.slice(-2)}`
 }
 
-export function CompareTab() {
-  const [selected, setSelected] = useState<string[]>([])
+interface Props {
+  // When the Compare section is embedded under a specific bike's chart,
+  // anchor that bike as the first selection so the user only has to add
+  // 1+ comparators rather than re-pick the bike they're already viewing.
+  anchorBikeId?: string | null
+}
+
+export function CompareTab({ anchorBikeId = null }: Props = {}) {
+  const [selected, setSelected] = useState<string[]>(
+    anchorBikeId ? [anchorBikeId] : [],
+  )
   const [filter, setFilter] = useState('')
   const [brandFilter, setBrandFilter] = useState<string | null>(null)
+
+  // When the user navigates to a different anchor bike (selectedBikeId
+  // changes), reset the selection so it re-seeds with the new anchor.
+  // Skipped when `selected` already differs intentionally — we only reset
+  // when the previous selection looks like the prior anchor alone.
+  useEffect(() => {
+    if (!anchorBikeId) return
+    setSelected(prev =>
+      prev.length === 0 || (prev.length === 1 && prev[0] !== anchorBikeId)
+        ? [anchorBikeId]
+        : prev,
+    )
+  }, [anchorBikeId])
 
   const { data: bikes = [] } = useQuery({ queryKey: ['bikes'], queryFn: fetchBikes })
 
@@ -188,14 +210,23 @@ export function CompareTab() {
         </CardContent>
       </Card>
 
-      {/* Empty state */}
-      {selected.length < 2 && (
-        <Card className="p-12 text-center">
-          <p className="text-muted-foreground">
-            Pick at least 2 bikes above to overlay their monthly sales.
-          </p>
-        </Card>
-      )}
+      {/* Empty state. Tailor the copy when an anchor bike is pre-selected
+          so the user knows they only need to pick 1 more, not 2 from
+          scratch. */}
+      {selected.length < 2 && (() => {
+        const anchorName = anchorBikeId
+          ? (bikes.find(b => b.id === anchorBikeId)?.display_name ?? null)
+          : null
+        return (
+          <Card className="p-12 text-center">
+            <p className="text-muted-foreground">
+              {anchorName
+                ? <>Pick another bike above to compare with <strong className="text-foreground">{anchorName}</strong>.</>
+                : 'Pick at least 2 bikes above to overlay their monthly sales.'}
+            </p>
+          </Card>
+        )
+      })()}
 
       {/* Chart + table */}
       {selected.length >= 2 && compareQ.data && (
