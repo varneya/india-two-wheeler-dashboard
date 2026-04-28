@@ -329,10 +329,16 @@ function Dashboard() {
           )
         )}
 
-        {/* Influencer Reviews — standalone listing of motorcycle videos
-            from the curated YouTube channels. Independent of the global
-            brand/model picker; has its own channel + search filters. */}
-        {tab === 'influencers' && <InfluencerReviewsTab />}
+        {/* Influencer Reviews — listing of motorcycle videos from the
+            curated YouTube channels. Defaults to scoping by the bike
+            currently selected at the top; user can opt into "show all"
+            to browse the full catalogue. */}
+        {tab === 'influencers' && (
+          <InfluencerReviewsTab
+            bikeId={selectedBikeId}
+            bikeName={selectedBike?.display_name ?? selectedBikeId}
+          />
+        )}
 
         {/* Data Refresh tab */}
         {tab === 'refresh' && <RefreshTab />}

@@ -151,9 +151,11 @@ export interface InfluencerChannel {
   video_count: number
 }
 
-// Standalone listing — independent of bike picker. Optional filters.
+// Optional filters: channel + bike_id + free-text search. Pass bike_id
+// when the dashboard's top picker has a specific bike selected so the
+// listing scopes to that bike.
 export const fetchAllInfluencerVideos = (
-  opts: { channel?: string; q?: string } = {},
+  opts: { channel?: string; bike_id?: string; q?: string } = {},
 ): Promise<InfluencerVideo[]> =>
   api
     .get<InfluencerVideo[]>('/influencer-videos', { params: opts })

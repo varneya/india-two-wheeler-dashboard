@@ -992,15 +992,17 @@ def list_influencer_channels():
 @app.get("/api/influencer-videos")
 def list_influencer_videos(
     channel: str | None = None,
+    bike_id: str | None = None,
     q: str | None = None,
     limit: int = Query(500, ge=1, le=1000),
     include_transcript: bool = False,
 ):
-    """List ALL captured YouTube videos (independent of bike picker),
-    newest first. Metadata-only by default — pass ?include_transcript=true
-    when the caller needs transcript text inline."""
+    """List captured YouTube videos newest-first. Filterable by channel
+    handle, bike_id (links to the dashboard's top picker), and search
+    keyword. Metadata-only by default."""
     return database.list_all_video_transcripts(
         channel_handle=channel,
+        bike_id=bike_id,
         q=q,
         limit=limit,
         include_transcript=include_transcript,

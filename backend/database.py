@@ -914,39 +914,48 @@ def video_transcript_exists(video_id: str) -> bool:
 
 def list_all_video_transcripts(
     channel_handle: str | None = None,
+    bike_id: str | None = None,
     q: str | None = None,
     limit: int = 500,
     include_transcript: bool = False,
 ) -> list[dict]:
-    """List videos for the standalone Influencer Reviews tab. Independent
-    of bike_id. Filterable by channel handle + free-text search.
+    """List videos for the Influencer Reviews tab. Filterable by channel
+    handle, bike_id (joins through video_bike_match), and free-text search.
+
+    bike_id is the link to the dashboard's top picker — when the user
+    has Honda Shine selected, we scope to videos tagged with
+    'honda-shine' so the listing matches the page context.
 
     `include_transcript` defaults to False — the listing endpoint serves
     metadata only. Transcripts are 5–10k chars each; fetching all of them
     on tab load makes the network round-trip slow on the dev proxy and
-    is wasteful when most users won't expand them. The per-bike endpoint
-    still includes transcripts because that's a smaller, scoped list."""
+    is wasteful when most users won't expand them."""
     cols = (
-        "video_id, channel_handle, channel_name, video_url, "
-        "title, description, duration_s, published_at, language, "
-        "transcript_status, fetched_at"
-        + (", transcript" if include_transcript else "")
+        "v.video_id, v.channel_handle, v.channel_name, v.video_url, "
+        "v.title, v.description, v.duration_s, v.published_at, v.language, "
+        "v.transcript_status, v.fetched_at"
+        + (", v.transcript" if include_transcript else "")
     )
+    join = ""
     clauses: list[str] = []
     params: list = []
+    if bike_id:
+        join = "JOIN video_bike_match m ON v.video_id = m.video_id"
+        clauses.append("m.bike_id = ?")
+        params.append(bike_id)
     if channel_handle:
-        clauses.append("channel_handle = ?")
+        clauses.append("v.channel_handle = ?")
         params.append(channel_handle)
     if q:
-        clauses.append("(LOWER(title) LIKE ? OR LOWER(description) LIKE ?)")
+        clauses.append("(LOWER(v.title) LIKE ? OR LOWER(v.description) LIKE ?)")
         params.append(f"%{q.lower()}%")
         params.append(f"%{q.lower()}%")
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
     with get_conn() as conn:
         rows = conn.execute(
             f"""SELECT {cols}
-               FROM video_transcripts {where}
-               ORDER BY COALESCE(published_at, fetched_at) DESC
+               FROM video_transcripts v {join} {where}
+               ORDER BY COALESCE(v.published_at, v.fetched_at) DESC
                LIMIT ?""",
             (*params, limit),
         ).fetchall()

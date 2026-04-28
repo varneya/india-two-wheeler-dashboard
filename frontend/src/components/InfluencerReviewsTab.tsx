@@ -78,28 +78,45 @@ function VideoCard({ video }: { video: InfluencerVideo }) {
   )
 }
 
+interface Props {
+  // The dashboard's top picker passes its current selection here. When
+  // set (per-bike mode), the listing scopes to videos tagged with that
+  // bike_id by default. The user can still click "Show all videos" to
+  // browse the full catalogue, then re-scope by clicking the bike chip.
+  bikeId?: string | null
+  bikeName?: string | null
+}
+
 /**
- * Standalone Influencer Reviews tab. Independent of the global
- * brand/model picker — has its own filter (channel chips + free-text
- * search) and lists every captured YouTube video chronologically. Pulls
- * from the curated motorcycle channels in youtube_scraper.CHANNELS.
+ * Influencer Reviews tab. By default scopes to the bike currently
+ * selected at the top of the dashboard (per-bike mode). When no bike
+ * is selected (brand "All models" mode), or when the user clicks
+ * "Show all videos", lists every captured YouTube video chronologically
+ * with channel-chip + free-text filters.
  */
-export function InfluencerReviewsTab() {
+export function InfluencerReviewsTab({
+  bikeId = null,
+  bikeName = null,
+}: Props = {}) {
   const [selectedHandle, setSelectedHandle] = useState<string | null>(null)
   const [query, setQuery] = useState('')
+  // When the user explicitly opts out of bike scoping, this overrides
+  // the bikeId prop and shows all videos.
+  const [showAll, setShowAll] = useState(false)
 
-  // Channels endpoint already returns video_count per channel — no need
-  // to pull the full list just to compute filter-chip counts.
+  const effectiveBikeId = !showAll && bikeId ? bikeId : null
+
   const { data: channels = [] } = useQuery({
     queryKey: ['influencer-channels'],
     queryFn: fetchInfluencerChannels,
   })
 
   const { data: videos = [], isLoading, isError } = useQuery({
-    queryKey: ['influencer-videos', selectedHandle, query],
+    queryKey: ['influencer-videos', effectiveBikeId, selectedHandle, query],
     queryFn: () =>
       fetchAllInfluencerVideos({
         channel: selectedHandle ?? undefined,
+        bike_id: effectiveBikeId ?? undefined,
         q: query || undefined,
       }),
   })
@@ -112,10 +129,37 @@ export function InfluencerReviewsTab() {
         <h2 className="text-lg font-semibold text-foreground">
           Influencer Reviews
         </h2>
-        <p className="text-sm text-muted-foreground mt-1">
-          Latest motorcycle videos from a curated set of Indian YouTube
-          channels. Filter by channel or search by keyword.
-        </p>
+        {effectiveBikeId ? (
+          <p className="text-sm text-muted-foreground mt-1">
+            Videos tagged to{' '}
+            <strong className="text-foreground">{bikeName ?? bikeId}</strong>.{' '}
+            <button
+              type="button"
+              className="underline hover:text-foreground"
+              onClick={() => setShowAll(true)}
+            >
+              Show all videos
+            </button>{' '}
+            to browse every channel.
+          </p>
+        ) : showAll && bikeId ? (
+          <p className="text-sm text-muted-foreground mt-1">
+            Showing all videos.{' '}
+            <button
+              type="button"
+              className="underline hover:text-foreground"
+              onClick={() => setShowAll(false)}
+            >
+              Re-scope to {bikeName ?? bikeId}
+            </button>
+            .
+          </p>
+        ) : (
+          <p className="text-sm text-muted-foreground mt-1">
+            Latest motorcycle videos from a curated set of Indian YouTube
+            channels. Filter by channel or search by keyword.
+          </p>
+        )}
       </div>
 
       <Card>
