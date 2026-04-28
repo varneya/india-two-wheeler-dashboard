@@ -29,6 +29,9 @@ export interface ComparePoint {
   bike_id: string
   month: string
   units_sold: number
+  // True when the value was filled by the imputation pipeline (no source
+  // reported this month). Optional because old backends may not send it.
+  imputed?: boolean
 }
 
 export interface CompareBike {

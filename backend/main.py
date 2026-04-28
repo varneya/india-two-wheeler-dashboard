@@ -1151,35 +1151,84 @@ def bike_themes_status(bike_id: str):
 
 @app.get("/api/compare")
 def compare_bikes(ids: str = Query(..., description="comma-separated bike ids, max 4")):
+    """Side-by-side time series for 2–4 bikes.
+
+    Each bike's series spans its launch month → most recent observed month
+    (not the union across the comparison set), so a recently-launched bike
+    doesn't render as a flat line at 0 for years before it existed. Months
+    inside that window with no source-reported value are imputed using the
+    same pipeline the main chart uses (`forecast.build_complete_index` +
+    `forecast.impute`); each row carries `imputed: bool` so the UI can
+    style filled points distinctly.
+
+    Summary stats (total_units, peak, avg) are computed from observed
+    points only — imputed values are smoothing artifacts, not real sales
+    to count. `months_tracked` reflects observed months as well.
+    """
     bike_ids = [b.strip() for b in ids.split(",") if b.strip()][:4]
     if len(bike_ids) < 2:
         raise HTTPException(status_code=400, detail="Provide at least 2 bike ids")
 
     bikes_meta: list[dict] = []
     series: list[dict] = []
+
+    # Pull the per-month per-source rows once per bike; the imputed series
+    # is computed locally so we only hit the DB N times for N bikes.
+    by_month_observed = {
+        bid: {
+            row["month"]: int(row["units_sold"])
+            for row in database.get_all_sales(bike_id=bid)
+        }
+        for bid in bike_ids
+    }
+
     for bid in bike_ids:
         bike = database.get_bike(bid)
         if not bike:
             continue
-        sales = database.get_all_sales(bike_id=bid)
-        total = sum(s["units_sold"] for s in sales)
-        peak = max(sales, key=lambda s: s["units_sold"]) if sales else None
+
+        raw = forecast_mod.build_complete_index(bid)
+        observed_pairs = list(by_month_observed[bid].items())
+
+        if raw.empty:
+            # No observations at all — nothing to plot for this bike.
+            bikes_meta.append({
+                "id": bid,
+                "display_name": bike["display_name"],
+                "brand": bike["brand"],
+                "total_units": 0,
+                "months_tracked": 0,
+                "peak_month": None,
+                "peak_units": 0,
+                "avg_per_month": 0,
+            })
+            continue
+
+        imputed_series, meta = forecast_mod.impute(raw)
+        for i, m in enumerate(meta):
+            series.append({
+                "bike_id": bid,
+                "month": m["month"],
+                "units_sold": int(imputed_series.iloc[i]),
+                "imputed": m["imputed"],
+            })
+
+        # Stats from observed-only so imputed values don't inflate totals.
+        total = sum(u for _, u in observed_pairs)
+        peak_month, peak_units = (
+            max(observed_pairs, key=lambda kv: kv[1]) if observed_pairs else (None, 0)
+        )
         bikes_meta.append({
             "id": bid,
             "display_name": bike["display_name"],
             "brand": bike["brand"],
             "total_units": total,
-            "months_tracked": len(sales),
-            "peak_month": peak["month"] if peak else None,
-            "peak_units": peak["units_sold"] if peak else 0,
-            "avg_per_month": (total // len(sales)) if sales else 0,
+            "months_tracked": len(observed_pairs),
+            "peak_month": peak_month,
+            "peak_units": peak_units,
+            "avg_per_month": (total // len(observed_pairs)) if observed_pairs else 0,
         })
-        for s in sales:
-            series.append({
-                "bike_id": bid,
-                "month": s["month"],
-                "units_sold": s["units_sold"],
-            })
+
     return {"bikes": bikes_meta, "series": series}
 
 

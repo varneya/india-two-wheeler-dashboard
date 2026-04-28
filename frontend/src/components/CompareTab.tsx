@@ -99,14 +99,31 @@ export function CompareTab({ anchorBikeId = null }: Props = {}) {
 
   const chartData = useMemo(() => {
     if (!compareQ.data) return []
+    // Index series by (bike_id, month) once so we don't run an O(N) find()
+    // per cell of the months × bikes grid.
+    const byBikeMonth = new Map<string, { units: number; imputed: boolean }>()
+    for (const s of compareQ.data.series) {
+      byBikeMonth.set(`${s.bike_id}|${s.month}`, {
+        units: s.units_sold,
+        imputed: !!s.imputed,
+      })
+    }
     const monthSet = new Set<string>()
     compareQ.data.series.forEach(s => monthSet.add(s.month))
     const months = Array.from(monthSet).sort()
     return months.map(month => {
-      const row: Record<string, string | number> = { month, monthLabel: formatMonth(month) }
+      const row: Record<string, string | number | null | boolean> = {
+        month,
+        monthLabel: formatMonth(month),
+      }
       for (const b of compareQ.data!.bikes) {
-        const point = compareQ.data!.series.find(s => s.month === month && s.bike_id === b.id)
-        row[b.id] = point?.units_sold ?? 0
+        const point = byBikeMonth.get(`${b.id}|${month}`)
+        // null (not 0) for months outside this bike's launch→now window so
+        // the line breaks rather than dropping to a zero floor. Imputed
+        // months inside the window carry a value AND a sibling flag the
+        // dot renderer reads to draw the marker hollow.
+        row[b.id] = point ? point.units : null
+        row[`${b.id}__imputed`] = point ? point.imputed : false
       }
       return row
     })
@@ -233,7 +250,15 @@ export function CompareTab({ anchorBikeId = null }: Props = {}) {
         <>
           <Card>
             <CardContent>
-              <h3 className="text-sm font-medium text-foreground mb-3">Monthly Sales Comparison</h3>
+              <div className="flex items-baseline justify-between gap-3 flex-wrap mb-3">
+                <h3 className="text-sm font-medium text-foreground">
+                  Monthly Sales Comparison
+                </h3>
+                <p className="text-xs text-muted-foreground">
+                  Each line starts at the bike's launch month. Hollow dots
+                  are months estimated from surrounding data.
+                </p>
+              </div>
             <ResponsiveContainer width="100%" height={360}>
               <LineChart data={chartData} margin={{ top: 8, right: 12, bottom: 4, left: -8 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
@@ -258,9 +283,28 @@ export function CompareTab({ anchorBikeId = null }: Props = {}) {
                     name={b.display_name}
                     stroke={COLORS[i]}
                     strokeWidth={2}
-                    dot={{ r: 3 }}
+                    // Hollow dot when the underlying month was imputed,
+                    // filled when it came from real data.
+                    dot={(props: { cx?: number; cy?: number; payload?: Record<string, unknown> }) => {
+                      const { cx, cy, payload } = props
+                      if (cx == null || cy == null) {
+                        return <g key={`${b.id}-${cx ?? 0}-${cy ?? 0}-empty`} />
+                      }
+                      const wasImputed = !!(payload && payload[`${b.id}__imputed`])
+                      return (
+                        <circle
+                          key={`${b.id}-${cx}-${cy}`}
+                          cx={cx}
+                          cy={cy}
+                          r={3}
+                          fill={wasImputed ? 'transparent' : COLORS[i]}
+                          stroke={COLORS[i]}
+                          strokeWidth={1.5}
+                        />
+                      )
+                    }}
                     activeDot={{ r: 5 }}
-                    connectNulls
+                    connectNulls={false}
                   />
                 ))}
               </LineChart>
