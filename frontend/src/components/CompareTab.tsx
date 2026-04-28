@@ -30,6 +30,55 @@ function formatMonth(m: string) {
   return `${names[idx]} '${y.slice(-2)}`
 }
 
+interface CompareTooltipProps {
+  active?: boolean
+  label?: string
+  payload?: Array<{
+    name?: string
+    value?: number | null
+    color?: string
+    dataKey?: string
+    payload?: Record<string, unknown>
+  }>
+}
+
+/**
+ * Custom recharts tooltip that surfaces "(estimated)" next to any value
+ * whose underlying month was filled by the imputation pipeline. We can't
+ * use the default tooltip's `formatter` because the formatter only sees
+ * the value — it doesn't know whether the sibling `<dataKey>__imputed`
+ * field is true. With a custom tooltip we read the full payload row.
+ */
+function CompareTooltip({ active, label, payload }: CompareTooltipProps) {
+  if (!active || !payload || payload.length === 0) return null
+  return (
+    <div className="bg-card border border-border rounded-lg px-3 py-2 text-xs shadow-lg">
+      <p className="text-foreground font-medium mb-1">{label}</p>
+      <div className="space-y-0.5">
+        {payload.map(p => {
+          if (p.value == null) return null
+          const isImputed = !!(p.payload && p.payload[`${p.dataKey}__imputed`])
+          return (
+            <div key={p.dataKey ?? p.name} className="flex items-baseline gap-2">
+              <span
+                className="inline-block w-2 h-2 rounded-full shrink-0"
+                style={{ background: p.color }}
+              />
+              <span className="text-muted-foreground">{p.name}:</span>
+              <span className="font-mono tabular-nums text-foreground">
+                {Number(p.value).toLocaleString()}
+              </span>
+              {isImputed && (
+                <span className="text-muted-foreground italic">(estimated)</span>
+              )}
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
 interface Props {
   // When the Compare section is embedded under a specific bike's chart,
   // anchor that bike as the first selection so the user only has to add
@@ -254,10 +303,20 @@ export function CompareTab({ anchorBikeId = null }: Props = {}) {
                 <h3 className="text-sm font-medium text-foreground">
                   Monthly Sales Comparison
                 </h3>
-                <p className="text-xs text-muted-foreground">
-                  Each line starts at the bike's launch month. Hollow dots
-                  are months estimated from surrounding data.
-                </p>
+                <div className="flex items-center gap-3 text-xs text-muted-foreground flex-wrap">
+                  <span className="inline-flex items-center gap-1.5">
+                    <svg width="10" height="10" aria-hidden>
+                      <circle cx={5} cy={5} r={3.5} fill="currentColor" />
+                    </svg>
+                    Real data
+                  </span>
+                  <span className="inline-flex items-center gap-1.5">
+                    <svg width="12" height="12" aria-hidden>
+                      <circle cx={6} cy={6} r={4} fill="none" stroke="currentColor" strokeWidth={2} strokeDasharray="2.5 2.5" />
+                    </svg>
+                    Estimated
+                  </span>
+                </div>
               </div>
             <ResponsiveContainer width="100%" height={360}>
               <LineChart data={chartData} margin={{ top: 8, right: 12, bottom: 4, left: -8 }}>
@@ -267,13 +326,7 @@ export function CompareTab({ anchorBikeId = null }: Props = {}) {
                   tickFormatter={v => `${(v / 1000).toFixed(0)}k`}
                   tick={{ fill: '#94a3b8', fontSize: 12 }}
                 />
-                <Tooltip
-                  contentStyle={{ background: '#1e293b', border: '1px solid #475569', borderRadius: 8 }}
-                  labelStyle={{ color: '#e2e8f0' }}
-                  formatter={(v) =>
-                    typeof v === 'number' ? v.toLocaleString() : v
-                  }
-                />
+                <Tooltip content={<CompareTooltip />} />
                 <Legend wrapperStyle={{ color: '#94a3b8', fontSize: 12 }} />
                 {compareQ.data.bikes.map((b, i) => (
                   <Line
@@ -283,27 +336,42 @@ export function CompareTab({ anchorBikeId = null }: Props = {}) {
                     name={b.display_name}
                     stroke={COLORS[i]}
                     strokeWidth={2}
-                    // Hollow dot when the underlying month was imputed,
-                    // filled when it came from real data.
+                    // Filled circle for observed months, larger dashed-ring
+                    // hollow circle for imputed months. The size + dash
+                    // distinction is visible at a glance even on a busy
+                    // multi-bike chart.
                     dot={(props: { cx?: number; cy?: number; payload?: Record<string, unknown> }) => {
                       const { cx, cy, payload } = props
                       if (cx == null || cy == null) {
                         return <g key={`${b.id}-${cx ?? 0}-${cy ?? 0}-empty`} />
                       }
                       const wasImputed = !!(payload && payload[`${b.id}__imputed`])
+                      if (wasImputed) {
+                        return (
+                          <circle
+                            key={`${b.id}-${cx}-${cy}`}
+                            cx={cx}
+                            cy={cy}
+                            r={5}
+                            fill="none"
+                            stroke={COLORS[i]}
+                            strokeWidth={2}
+                            strokeDasharray="2.5 2.5"
+                          />
+                        )
+                      }
                       return (
                         <circle
                           key={`${b.id}-${cx}-${cy}`}
                           cx={cx}
                           cy={cy}
-                          r={3}
-                          fill={wasImputed ? 'transparent' : COLORS[i]}
-                          stroke={COLORS[i]}
-                          strokeWidth={1.5}
+                          r={3.5}
+                          fill={COLORS[i]}
+                          stroke="none"
                         />
                       )
                     }}
-                    activeDot={{ r: 5 }}
+                    activeDot={{ r: 6 }}
                     connectNulls={false}
                   />
                 ))}
