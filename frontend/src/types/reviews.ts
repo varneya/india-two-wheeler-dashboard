@@ -1,6 +1,8 @@
+export type ReviewSource = 'reddit' | 'bikedekho' | 'bikewale' | 'zigwheels'
+
 export interface Review {
   id: number
-  source: 'team-bhp' | 'bikewale'
+  source: ReviewSource
   post_id: string
   username?: string
   review_text: string
