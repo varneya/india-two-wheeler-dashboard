@@ -72,7 +72,7 @@ def analyze(reviews: list[dict], min_cluster_size: int | None = None) -> list[di
 
     from themes_embeddings import active_model as _active_model  # local to avoid cycle
     print(f"[semantic] embedding {len(texts)} reviews via {_active_model()}…")
-    embeds = embed_texts(texts, post_ids=post_ids)
+    embeds = embed_texts(list(zip(post_ids, texts)))
     if not embeds.any():
         return {"error": "All embeddings came back empty — check Ollama logs."}
 

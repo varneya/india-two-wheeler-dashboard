@@ -1,0 +1,4 @@
+# Install the core runtime separately: pip install -r requirements.txt
+# Run from the repository root: backend/venv/bin/python -m pytest backend/tests
+pytest==8.4.2
+httpx==0.28.1

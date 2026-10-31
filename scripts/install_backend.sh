@@ -9,7 +9,7 @@
 #   ./scripts/install_backend.sh
 #
 # What it does:
-#   1. Checks for Python 3.10+. If missing, offers to install 3.12 via brew (mac)
+#   1. Checks for Python 3.12+. If missing, offers to install 3.12 via brew (mac)
 #      or apt (Debian/Ubuntu).
 #   2. Creates backend/venv if it doesn't exist.
 #   3. Upgrades pip and installs everything in backend/requirements.txt.
@@ -49,8 +49,8 @@ fi
 step "Step 1 - Checking Python"
 
 find_python() {
-  for c in python3.12 python3.11 python3.10 python3 python; do
-    if command -v "$c" &>/dev/null; then
+  for c in python3.12 python3.13 python3.14 python3 python; do
+    if command -v "$c" &>/dev/null && python_version_ok "$c"; then
       echo "$c"
       return 0
     fi
@@ -65,7 +65,7 @@ python_version_ok() {
   if [[ "$raw" =~ Python\ ([0-9]+)\.([0-9]+) ]]; then
     local major="${BASH_REMATCH[1]}"
     local minor="${BASH_REMATCH[2]}"
-    if [[ "$major" -eq 3 ]] && [[ "$minor" -ge 10 ]]; then
+    if [[ "$major" -eq 3 ]] && [[ "$minor" -ge 12 ]]; then
       return 0
     fi
   fi
@@ -77,7 +77,7 @@ if [[ -n "$PY_EXE" ]] && python_version_ok "$PY_EXE"; then
   ok "Using $($PY_EXE --version) at $(command -v "$PY_EXE")"
 else
   if [[ -n "$PY_EXE" ]]; then
-    warn "Found $($PY_EXE --version 2>&1) but need 3.10+."
+    warn "Found $($PY_EXE --version 2>&1) but need 3.12+."
   else
     warn "Python 3 not found on PATH."
   fi
@@ -96,7 +96,7 @@ else
   else
     # Linux: best-effort apt; fall through with an error otherwise.
     if ! command -v apt-get &>/dev/null; then
-      err "Auto-install supports apt only. Install Python 3.10+ manually for your distro and re-run."
+      err "Auto-install supports apt only. Install Python 3.12+ manually for your distro and re-run."
       exit 1
     fi
     read -r -p "Install Python 3.12 via apt now? (y/N) " resp
@@ -120,6 +120,10 @@ fi
 step "Step 2 - Creating virtualenv at backend/venv"
 
 if [[ -x "$VENV_DIR/bin/python" ]]; then
+  if ! python_version_ok "$VENV_DIR/bin/python"; then
+    err "Existing backend/venv needs Python 3.12+. Move it aside and re-run to create a new environment."
+    exit 1
+  fi
   ok "venv already exists - reusing"
 else
   info "Running '$PY_EXE -m venv $VENV_DIR'..."
@@ -137,13 +141,12 @@ step "Step 3 - Installing backend dependencies"
 info "Upgrading pip inside the venv..."
 "$VENV_PY" -m pip install --upgrade pip
 
-info "Installing requirements.txt (5-10 min the first time - Prophet,"
-info "  hdbscan, umap-learn, scikit-learn all need wheels or compile)..."
+info "Installing core requirements.txt (ML extras are optional)..."
 "$VENV_PY" -m pip install -r "$REQ_FILE"
 ok "All dependencies installed"
 
 info "Smoke-testing imports..."
-"$VENV_PY" -c "import fastapi, sklearn, hdbscan, umap, prophet, psutil; print('imports OK')"
+"$VENV_PY" -c "import fastapi, uvicorn, requests, bs4, anthropic, pydantic_settings, numpy, pandas, psutil, yt_dlp, youtube_transcript_api; print('imports OK')"
 
 # -------------------------------------------------------------------
 # Done
@@ -162,4 +165,5 @@ echo ""
 echo "Or in one line (no activation needed):"
 echo "  $VENV_PY -m uvicorn main:app --app-dir $BACKEND_DIR --port 8000"
 echo ""
-echo "Then run scripts/install_ollama.sh to set up the LLM side."
+echo "Optional ML methods: $VENV_PY -m pip install -r $BACKEND_DIR/requirements-ml.txt"
+echo "Optional local LLM: scripts/install_ollama.sh"

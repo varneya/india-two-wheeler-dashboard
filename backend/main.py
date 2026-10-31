@@ -1,15 +1,19 @@
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import asynccontextmanager
 
-from fastapi import BackgroundTasks, FastAPI, HTTPException, Query
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import RedirectResponse
+from fastapi.responses import FileResponse, RedirectResponse
 from pydantic import BaseModel
 import json as _json
+import random
+import re as _re
 import threading
 import time
 import requests as http_requests
 
+from auth import require_admin
+from config import settings
 import database
 import seed_data
 from extractor import extract_sales_for_bike
@@ -26,6 +30,11 @@ import bike_registry
 import bike_catalogue
 import autopunditz_scraper
 import youtube_scraper
+import bikewale_specs_scraper
+import hero_brochures
+import bajaj_brochures
+import royalenfield_brochures
+import brochure_utils
 import url_cache
 
 
@@ -45,19 +54,9 @@ app = FastAPI(title="Bike Sales Miner", lifespan=lifespan)
 # Oracle/Fly deploy script appends the production Caddy domain via the
 # `EXTRA_CORS_ORIGINS` env var (comma-separated) so we don't have to edit
 # this file when the backend gets a new public hostname.
-import os as _os  # noqa: E402, I001
-_EXTRA_CORS = [
-    o.strip() for o in (_os.environ.get("EXTRA_CORS_ORIGINS") or "").split(",")
-    if o.strip()
-]
-
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",
-        "https://varneya.github.io",
-        *_EXTRA_CORS,
-    ],
+    allow_origins=settings.cors_origins,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -141,7 +140,7 @@ def list_bikes():
     return database.get_all_bikes()
 
 
-@app.post("/api/bikes/cleanup")
+@app.post("/api/bikes/cleanup", dependencies=[Depends(require_admin)])
 def cleanup_bikes():
     """Remove bikes (and their sales/reviews/themes rows) that aren't in the
     curated catalogue. Useful after a parser change or schema migration."""
@@ -258,7 +257,7 @@ def _run_discovery():
         _discovery_running = False
 
 
-@app.post("/api/bikes/discover")
+@app.post("/api/bikes/discover", dependencies=[Depends(require_admin)])
 def trigger_discovery():
     global _discovery_running
     with _discovery_lock:
@@ -283,7 +282,7 @@ _refresh_all_lock = threading.Lock()
 _refresh_all_running: bool = False
 _refresh_all_state: dict = {
     "running": False,
-    "stage": "idle",            # idle | discovering | reviews | other_sources | autopunditz | youtube | done | error
+    "stage": "idle",            # idle | discovering | reviews | other_sources | autopunditz | youtube | specs_brochures | done | error
     "started_at": None,
     "finished_at": None,
     "force": False,             # set when caller invoked /api/refresh-all?force=true
@@ -308,11 +307,18 @@ _refresh_all_state: dict = {
         "model_rows_added": 0, "brand_rows_added": 0,
         "cached": 0, "fetched": 0,
     },
-    "youtube": {                # YouTube transcripts (Stage 6)
+    "youtube": {                # YouTube transcripts
         "channels_total": 0, "channels_done": 0,
         "current_channel": None,
         "videos_kept": 0,
         "cached": 0, "fetched": 0,
+    },
+    "specs_brochures": {        # Stage 6: BikeWale specs + OEM brochures
+        "variants_total": 0, "variants_done": 0,
+        "specs_ok": 0, "specs_failed": 0,
+        "brochures_oem_total": 0, "brochures_oem_done": 0,
+        "brochures_downloaded": 0, "brochures_unmatched": 0,
+        "current_variant": None,
     },
     "error": None,
 }
@@ -364,6 +370,13 @@ def _run_refresh_all(force: bool = False):
             "current_channel": None,
             "videos_kept": 0,
             "cached": 0, "fetched": 0,
+        }
+        _refresh_all_state["specs_brochures"] = {
+            "variants_total": 0, "variants_done": 0,
+            "specs_ok": 0, "specs_failed": 0,
+            "brochures_oem_total": 0, "brochures_oem_done": 0,
+            "brochures_downloaded": 0, "brochures_unmatched": 0,
+            "current_variant": None,
         }
     # Reset thread-local cache counters before stage 1 starts.
     url_cache.reset_stats()
@@ -601,6 +614,67 @@ def _run_refresh_all(force: bool = False):
 
         _flush_cache_stats("youtube")
 
+        # Stage 6 — BikeWale specs (all variants) + OEM brochures (per-OEM
+        # modules; Hero is the first to land). Both passes are idempotent
+        # upserts so re-runs are safe and cheap when nothing changed.
+        with _refresh_all_lock:
+            _refresh_all_state["stage"] = "specs_brochures"
+
+        try:
+            variants = database.list_variants(on_sale_only=True)
+            with _refresh_all_lock:
+                _refresh_all_state["specs_brochures"]["variants_total"] = len(variants)
+
+            specs_ok = specs_failed = 0
+            for v in variants:
+                slug = v.get("bikewale_slug")
+                if not slug:
+                    continue
+                result = bikewale_specs_scraper.scrape_variant(v["variant_id"], slug)
+                if result:
+                    database.upsert_bike_spec(
+                        variant_id=v["variant_id"],
+                        source="bikewale",
+                        source_url=result["url"],
+                        typed=result["typed"],
+                        raw_specs_json=_json.dumps(result["categorised"], ensure_ascii=False),
+                    )
+                    specs_ok += 1
+                else:
+                    specs_failed += 1
+                with _refresh_all_lock:
+                    _refresh_all_state["specs_brochures"]["variants_done"] += 1
+                    _refresh_all_state["specs_brochures"]["specs_ok"] = specs_ok
+                    _refresh_all_state["specs_brochures"]["specs_failed"] = specs_failed
+                    _refresh_all_state["specs_brochures"]["current_variant"] = v["display_name"]
+                time.sleep(random.uniform(1.0, 2.0))
+        except Exception as se:
+            print(f"[refresh-all] specs stage failed: {se}")
+
+        # OEM brochure scrapers — list of (oem_id, scraper_module) pairs.
+        # Add new OEMs here as their scrapers land (TVS, Honda, etc.).
+        OEM_BROCHURE_SCRAPERS = [
+            ("hero", hero_brochures),
+            ("bajaj", bajaj_brochures),
+            ("royalenfield", royalenfield_brochures),
+        ]
+        with _refresh_all_lock:
+            _refresh_all_state["specs_brochures"]["brochures_oem_total"] = len(OEM_BROCHURE_SCRAPERS)
+
+        for oem_id, mod in OEM_BROCHURE_SCRAPERS:
+            try:
+                summary = mod.scrape()
+                with _refresh_all_lock:
+                    _refresh_all_state["specs_brochures"]["brochures_oem_done"] += 1
+                    _refresh_all_state["specs_brochures"]["brochures_downloaded"] += summary.get("downloaded", 0)
+                    _refresh_all_state["specs_brochures"]["brochures_unmatched"] += summary.get("unmatched", 0)
+            except Exception as be:
+                print(f"[refresh-all] {oem_id} brochures failed: {be}")
+                with _refresh_all_lock:
+                    _refresh_all_state["specs_brochures"]["brochures_oem_done"] += 1
+
+        _flush_cache_stats("specs_brochures")
+
         finished_iso = __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat()
         with _refresh_all_lock:
             _refresh_all_state.update({
@@ -624,7 +698,7 @@ def _run_refresh_all(force: bool = False):
         _refresh_all_running = False
 
 
-@app.post("/api/refresh-all")
+@app.post("/api/refresh-all", dependencies=[Depends(require_admin)])
 def trigger_refresh_all(force: bool = False):
     """Kick off a full refresh in the background. `force=true` clears the
     HTTP url_cache first, forcing every URL to be re-fetched (use after
@@ -654,6 +728,7 @@ def refresh_all_status():
             "other_sources": dict(_refresh_all_state.get("other_sources") or {}),
             "autopunditz": dict(_refresh_all_state.get("autopunditz") or {}),
             "youtube": dict(_refresh_all_state.get("youtube") or {}),
+            "specs_brochures": dict(_refresh_all_state.get("specs_brochures") or {}),
             "error": _refresh_all_state["error"],
         }
 
@@ -695,7 +770,7 @@ def _run_single_bike_refresh(bike_id: str):
         database.log_scrape_run(len(articles), success, str(e))
 
 
-@app.post("/api/bikes/{bike_id}/refresh")
+@app.post("/api/bikes/{bike_id}/refresh", dependencies=[Depends(require_admin)])
 def trigger_bike_refresh(bike_id: str, background_tasks: BackgroundTasks):
     background_tasks.add_task(_run_single_bike_refresh, bike_id)
     return {"status": "started"}
@@ -1000,6 +1075,69 @@ def list_bike_variants(
     )
 
 
+# Constrain the sha256 path param to valid hex so we don't open arbitrary
+# files via path traversal. Used by the brochure download endpoint below.
+_SHA256_RE = _re.compile(r"[0-9a-f]{64}")
+
+
+@app.get("/api/variants/{variant_id}/specs")
+def get_variant_specs(variant_id: str, source: str | None = None):
+    """Tech specs for a variant. Returns one row per source (BikeWale,
+    plus any OEM-direct rows that exist) with typed columns + the full
+    `raw_specs` payload parsed back into a dict. The raw payload is
+    nested by category, e.g.:
+        { "Power & Performance": { "Displacement": {"value":"155","unit":"cc"} } }"""
+    rows = database.get_bike_specs(variant_id, source=source)
+    if not rows:
+        raise HTTPException(status_code=404, detail="no specs for variant")
+    for r in rows:
+        # Inflate the JSON blob so the frontend doesn't need to parse it.
+        raw = r.get("raw_specs_json")
+        if isinstance(raw, str):
+            try:
+                r["raw_specs"] = _json.loads(raw)
+            except Exception:
+                r["raw_specs"] = None
+        r.pop("raw_specs_json", None)
+    return rows
+
+
+@app.get("/api/variants/{variant_id}/brochures")
+def get_variant_brochures(variant_id: str):
+    """OEM brochure entries for a variant. The `local_path` is relative
+    to the backend directory; the frontend should download via
+    /api/brochures/{sha256}.pdf rather than touching local_path directly."""
+    rows = database.list_brochures(variant_id)
+    if not rows:
+        raise HTTPException(status_code=404, detail="no brochures for variant")
+    for r in rows:
+        # Convenience field — the URL the frontend should hit to fetch
+        # the PDF through the backend (handles caching + redaction of
+        # absolute disk paths).
+        r["download_url"] = f"/api/brochures/{r['sha256']}.pdf"
+    return rows
+
+
+@app.get("/api/brochures/{sha256}.pdf")
+def download_brochure(sha256: str):
+    """Stream the cached brochure PDF identified by its sha256 digest.
+    The digest is the canonical id — it dedupes across variants when
+    multiple variants share the same brochure, and ensures the byte
+    content matches what we hashed at scrape time."""
+    if not _SHA256_RE.fullmatch(sha256):
+        raise HTTPException(status_code=400, detail="invalid sha256")
+    path = brochure_utils.BROCHURE_CACHE_DIR / f"{sha256}.pdf"
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="brochure not on disk")
+    return FileResponse(
+        path,
+        media_type="application/pdf",
+        filename=f"{sha256[:12]}.pdf",
+    )
+
+
+
+
 @app.get("/api/influencer-channels")
 def list_influencer_channels():
     """Return the curated channels we scrape with their per-channel video
@@ -1086,7 +1224,7 @@ def _run_bike_reviews_scrape(bike_id: str):
     database.log_reviews_run(total, error_msg)
 
 
-@app.post("/api/bikes/{bike_id}/reviews/refresh")
+@app.post("/api/bikes/{bike_id}/reviews/refresh", dependencies=[Depends(require_admin)])
 def trigger_bike_reviews_refresh(bike_id: str, background_tasks: BackgroundTasks):
     background_tasks.add_task(_run_bike_reviews_scrape, bike_id)
     return {"status": "started"}
@@ -1104,6 +1242,8 @@ def reviews_refresh_status():
 
 # Per-bike running flag
 _themes_running: dict[str, bool] = {}
+_themes_errors: dict[str, str | None] = {}
+_themes_lock = threading.Lock()
 
 
 class ThemesRequest(BaseModel):
@@ -1113,21 +1253,28 @@ class ThemesRequest(BaseModel):
 
 
 def _do_themes_analysis(bike_id: str, method: str, config: dict, pool_scope: str):
+    error = None
     try:
-        themes_runner.run_analysis(method, config, bike_id=bike_id, pool_scope=pool_scope)
+        result = themes_runner.run_analysis(method, config, bike_id=bike_id, pool_scope=pool_scope)
+        error = result.get("error")
     except Exception as e:
+        error = str(e)
         print(f"[themes] {bike_id} error: {e}")
     finally:
-        _themes_running[bike_id] = False
+        with _themes_lock:
+            _themes_errors[bike_id] = error
+            _themes_running[bike_id] = False
 
 
-@app.post("/api/bikes/{bike_id}/themes/analyze")
+@app.post("/api/bikes/{bike_id}/themes/analyze", dependencies=[Depends(require_admin)])
 def run_bike_themes(bike_id: str, req: ThemesRequest, background_tasks: BackgroundTasks):
-    if _themes_running.get(bike_id):
-        return {"status": "already_running"}
     if req.pool_scope not in ("bike", "brand"):
         raise HTTPException(status_code=400, detail=f"pool_scope must be 'bike' or 'brand'")
-    _themes_running[bike_id] = True
+    with _themes_lock:
+        if _themes_running.get(bike_id):
+            return {"status": "already_running"}
+        _themes_running[bike_id] = True
+        _themes_errors[bike_id] = None
     background_tasks.add_task(
         _do_themes_analysis, bike_id, req.method, req.config, req.pool_scope
     )
@@ -1150,7 +1297,9 @@ def get_bike_themes(bike_id: str):
 @app.get("/api/bikes/{bike_id}/themes/status")
 def bike_themes_status(bike_id: str):
     db_status = database.get_themes_status(bike_id=bike_id)
-    return {"running": _themes_running.get(bike_id, False), **db_status}
+    with _themes_lock:
+        return {"running": _themes_running.get(bike_id, False),
+                "error": _themes_errors.get(bike_id), **db_status}
 
 
 # ===========================================================================
@@ -1286,7 +1435,9 @@ def legacy_themes_status():
 # Hardware & Ollama (unchanged from previous deployment)
 # ===========================================================================
 
-@app.get("/api/hardware")
+# Admin-gated on shared hosts: the report leaks host CPU/RAM details that
+# are nobody's business on a public backend. No-op for local-first setups.
+@app.get("/api/hardware", dependencies=[Depends(require_admin)])
 def get_hardware():
     return hardware_detector.full_report()
 
@@ -1303,7 +1454,7 @@ def _stream_pull(model_name: str):
         }
     try:
         with http_requests.post(
-            "http://localhost:11434/api/pull",
+            f"{settings.ollama_base_url}/api/pull",
             json={"name": model_name, "stream": True},
             stream=True, timeout=None,
         ) as resp:
@@ -1338,7 +1489,7 @@ def _stream_pull(model_name: str):
             _pull_state[model_name]["status"] = "error"
 
 
-@app.post("/api/ollama/pull/{model_name:path}")
+@app.post("/api/ollama/pull/{model_name:path}", dependencies=[Depends(require_admin)])
 def pull_ollama_model(model_name: str):
     with _pull_lock:
         existing = _pull_state.get(model_name)

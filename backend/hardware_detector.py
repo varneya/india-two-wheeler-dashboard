@@ -16,6 +16,8 @@ import requests as http_requests
 
 import psutil
 
+from config import settings
+
 
 # ---------------------------------------------------------------------------
 # Model catalogue — ordered best-fit first within each tier
@@ -178,7 +180,7 @@ def _ollama_installed() -> bool:
 
 def _ollama_running() -> bool:
     try:
-        r = http_requests.get("http://localhost:11434/api/tags", timeout=2)
+        r = http_requests.get(f"{settings.ollama_base_url}/api/tags", timeout=2)
         return r.status_code == 200
     except Exception:
         return False
@@ -186,7 +188,7 @@ def _ollama_running() -> bool:
 
 def _pulled_models() -> list[str]:
     try:
-        r = http_requests.get("http://localhost:11434/api/tags", timeout=3)
+        r = http_requests.get(f"{settings.ollama_base_url}/api/tags", timeout=3)
         if r.status_code == 200:
             return [m["name"].split(":")[0] + ":" + m["name"].split(":")[1]
                     if ":" in m["name"] else m["name"]

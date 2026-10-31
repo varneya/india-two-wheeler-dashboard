@@ -1,0 +1,16 @@
+# ML extras — needed only for:
+#   - TF-IDF / Semantic Clustering / BERTopic theme methods (sklearn, hdbscan, umap)
+#   - Prophet sales forecasting (prophet)
+#   - EMBEDDING_BACKEND=sentence_transformers (in-process MiniLM; installs
+#     torch, ~1 GB — comment out if you only use the Ollama embedding backend)
+#
+# Install on top of the core requirements:
+#     pip install -r requirements.txt -r requirements-ml.txt
+#
+# Left unpinned: these packages ship platform-specific wheels and interact
+# with the numpy ABI; let pip resolve against the pinned core set.
+scikit-learn
+hdbscan
+umap-learn
+prophet
+sentence-transformers

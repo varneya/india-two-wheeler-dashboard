@@ -1,13 +1,10 @@
-import axios from 'axios'
 import type {
   Metrics,
   RefreshStatus,
   SalesDataPoint,
   SalesSeriesResponse,
 } from '../types/sales'
-import { API_BASE } from './client'
-
-const api = axios.create({ baseURL: API_BASE })
+import { api } from './client'
 
 export const fetchSales = (bikeId: string): Promise<SalesDataPoint[]> =>
   api.get<SalesDataPoint[]>(`/bikes/${bikeId}/sales`).then(r => r.data)

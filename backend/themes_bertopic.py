@@ -39,10 +39,11 @@ from themes_embeddings import (
     sentiment_for,
     shortest_snippet,
 )
-from themes_llm import _analyze_ollama  # reused for direct Ollama chat calls
 import requests as http_requests
 
-OLLAMA_CHAT_URL = "http://localhost:11434/api/chat"
+from config import settings
+
+OLLAMA_CHAT_URL = f"{settings.ollama_base_url}/api/chat"
 
 
 def _refine_names_via_llm(
@@ -121,7 +122,7 @@ def analyze(
     n_neighbors = min(n_neighbors, max(2, len(texts) - 1))
 
     print(f"[bertopic] embedding {len(texts)} reviews…")
-    embeds = embed_texts(texts, post_ids=post_ids)
+    embeds = embed_texts(list(zip(post_ids, texts)))
 
     print(f"[bertopic] UMAP reducing 768→{n_components} dims…")
     reducer = umap.UMAP(
@@ -215,6 +216,4 @@ def analyze(
         })
 
     results.sort(key=lambda r: -r["mention_count"])
-    # Suppress unused-import warning for a helper kept for future use
-    _ = _analyze_ollama
     return results

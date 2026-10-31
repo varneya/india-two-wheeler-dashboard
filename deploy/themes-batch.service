@@ -1,0 +1,22 @@
+# Optional Groq batch. Bootstrap substitutes TWB_USER and TWB_REPO.
+# Configure GROQ_API_KEY and THEMES_LLM_BACKEND=groq:<model> to opt in.
+# Inspect: journalctl -u themes-batch.service
+[Unit]
+Description=India Two-Wheeler Dashboard — incremental Groq themes
+After=network-online.target twowheeler-backend.service refresh-all.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=${TWB_USER}
+Group=${TWB_USER}
+WorkingDirectory=${TWB_REPO}/backend
+EnvironmentFile=-${TWB_REPO}/backend/.env
+EnvironmentFile=-/etc/twowheeler/env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=${TWB_REPO}/backend/venv/bin/python batch_themes.py
+# The batch owns pacing, locking and the persistent daily request budget.
+# No automatic restart: failed/interrupted requests halt the day's batch.
+Restart=no
+TimeoutStartSec=2h
+UMask=0077

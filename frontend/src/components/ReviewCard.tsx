@@ -1,12 +1,26 @@
 import { Star, StarOff } from 'lucide-react'
 import { useState } from 'react'
-import type { Review } from '../types/reviews'
+import type { Review, ReviewSource } from '../types/reviews'
 import { Badge } from './ui/badge'
 import { Button } from './ui/button'
 import { Card, CardContent } from './ui/card'
 
 interface Props {
   review: Review
+}
+
+const SOURCE_LABEL: Record<ReviewSource, string> = {
+  reddit: 'Reddit',
+  bikedekho: 'BikeDekho',
+  bikewale: 'BikeWale',
+  zigwheels: 'Zigwheels',
+}
+
+const SOURCE_BADGE_VARIANT: Record<ReviewSource, 'info' | 'warning' | 'default' | 'secondary'> = {
+  reddit: 'warning',
+  bikedekho: 'info',
+  bikewale: 'default',
+  zigwheels: 'secondary',
 }
 
 function Stars({ rating }: { rating: number }) {
@@ -25,20 +39,22 @@ function Stars({ rating }: { rating: number }) {
 
 export function ReviewCard({ review }: Props) {
   const [expanded, setExpanded] = useState(false)
-  const isTeamBhp = review.source === 'team-bhp'
   const previewLen = 300
   const long = review.review_text.length > previewLen
   const displayText = expanded || !long
     ? review.review_text
     : review.review_text.slice(0, previewLen) + '…'
 
+  const sourceLabel = SOURCE_LABEL[review.source] ?? review.source
+  const sourceVariant = SOURCE_BADGE_VARIANT[review.source] ?? 'default'
+
   return (
     <Card className="py-4 gap-2">
       <CardContent className="flex flex-col gap-2">
         <div className="flex items-center justify-between flex-wrap gap-2">
           <div className="flex items-center gap-2">
-            <Badge variant={isTeamBhp ? 'info' : 'warning'}>
-              {isTeamBhp ? 'Team-BHP' : 'BikeWale'}
+            <Badge variant={sourceVariant}>
+              {sourceLabel}
             </Badge>
             {review.username && (
               <span className="text-foreground text-sm font-medium">{review.username}</span>

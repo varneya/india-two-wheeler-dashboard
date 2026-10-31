@@ -60,7 +60,9 @@ def _sentiment(texts: list[str]) -> str:
 
 def analyze(reviews: list[dict], n_clusters: int = 6) -> list[dict] | dict:
     if not SKLEARN_AVAILABLE:
-        return {"error": "scikit-learn not installed. Run: pip install scikit-learn"}
+        return {"error": "The TF-IDF method needs the ML extras. Install them "
+                         "with: pip install -r requirements-ml.txt "
+                         "(missing: scikit-learn)"}
 
     texts = [r["review_text"] for r in reviews if r.get("review_text")]
     if len(texts) < n_clusters:
