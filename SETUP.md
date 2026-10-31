@@ -26,8 +26,8 @@ review text to the configured provider.
 4. The Setup tab polls every ~8 s — pills go green and the rest of the
    tabs come alive.
 
-The hosted frontend bundles a build-time `VITE_API_BASE=http://localhost:8000/api`,
-so dashboard requests go to your local backend. Claude is selectable in the UI;
+The hosted frontend uses the repository variable `VITE_API_BASE` at build time.
+When unset, it defaults to `http://localhost:8000/api` for a local backend. Claude is selectable in the UI;
 Groq and generic OpenAI-compatible inference are currently selected through
 the analysis API (Section 6). Ollama is optional for browsing and keyword analysis.
 
@@ -411,64 +411,100 @@ Find the offender: `lsof -ti :8000 | xargs kill` (macOS / Linux) or use `netstat
 
 ## Hosting the backend on Oracle Cloud (Always Free)
 
-If you want the backend reachable 24/7 from any device — not just your laptop —
-the bundled bootstrap targets an Ubuntu VM, including Oracle ARM instances.
-Confirm current pricing, free-tier eligibility, and available capacity with
-your provider before provisioning. The script installs the core backend and
-Ollama; install ML extras separately if you need clustering or forecasting.
+The deployment script targets Ubuntu 24.04 with Python 3.12+. It installs the
+core backend, Caddy for HTTPS, daily scrapes, and DuckDNS updates. Groq is the
+recommended inference backend; local Ollama installation is opt-in.
 
-### One-time prerequisites you do yourself (~30 min)
+### Provision the free services
 
-1. **Provision an Oracle Cloud Always-Free ARM VM**
-   (`VM.Standard.A1.Flex`, 2 OCPU + 12 GB RAM, Ubuntu 24.04). Allocate a
-   public IP. In the VCN security list, open inbound TCP 22, 80, 443.
-   On Oracle Linux you also need `sudo iptables -I INPUT -p tcp --dport 80 -j ACCEPT`
-   and the same for 443 (Ubuntu's default iptables is permissive — skip this step there).
+1. In your Oracle tenancy's **home region**, create an eligible Always Free
+   `VM.Standard.A1.Flex` VM with 2 OCPU, 12 GB RAM and a 50 GB boot volume.
+   Verify the console's free eligibility and your **combined** account usage
+   before creating it. Capacity may be unavailable. Do not upgrade to a paid
+   shape to work around that. Use Ubuntu 24.04 and a public IP.
+2. Permit TCP 80/443 in the cloud network and host firewall. Restrict SSH 22
+   to your administrator IP. Keep port 8000 private; uvicorn binds to localhost.
+3. Sign in to [DuckDNS](https://www.duckdns.org/), create a subdomain such as
+   `varneya-bikes`, and point it at the VM public IP.
+4. Create a [Groq](https://console.groq.com/keys) key on the free plan. Confirm
+   the model is available to your account; the example below uses
+   `openai/gpt-oss-20b`. Do not enable paid billing for this deployment.
 
-2. **Sign up at <https://www.duckdns.org/>** (GitHub OAuth, ~2 min). Create
-   a subdomain (e.g. `varneya-bikes`), copy your DuckDNS token, and set the
-   subdomain's A record to your VM's public IP.
+### Prepare credentials on the VM
 
-3. **SSH into the VM** as a sudo-capable user. Before running the bootstrap,
-   create `/etc/twowheeler/env` with mode `600` and an `ADMIN_TOKEN` as described
-   in Section 6. The script preserves this file and both services read it.
+Use SSH and a root editor to create `/etc/twowheeler/env` with directory mode
+`700` and file mode `600`, both owned by root. Add:
 
-### Run the bootstrap (~10–20 min, mostly model downloads)
-
-```bash
-sudo \
-  TWB_DUCKDNS_DOMAIN=varneya-bikes \
-  TWB_DUCKDNS_TOKEN=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx \
-  bash <(curl -fsSL https://raw.githubusercontent.com/varneya/india-two-wheeler-dashboard/main/scripts/setup_oracle_vm.sh)
+```dotenv
+GROQ_API_KEY=<your-key>
+THEMES_LLM_BACKEND=groq:openai/gpt-oss-20b
+THEMES_BATCH_MAX_REQUESTS=10
+THEMES_BATCH_GAP_SECONDS=90
 ```
 
-The script:
+The bootstrap generates a missing `ADMIN_TOKEN`, preserves existing keys, and
+loads this file for the API and batch service. Never commit it or put provider
+keys/admin tokens in GitHub Pages variables. Set `twd_admin_token` in your own
+browser's local storage only if you need to use protected controls.
 
-1. `apt install`s Python 3.12, git, Caddy, Ollama
-2. Clones the repo to `/opt/twowheeler` and runs `scripts/install_backend.sh` (venv + pip)
-3. Pulls `nomic-embed-text` + `qwen3:8b` by default
-4. Writes systemd units for the backend, the daily scrape refresh, and the
-   DuckDNS A-record updater; enables them all
-5. Drops a Caddyfile that terminates TLS (Let's Encrypt via HTTP-01) for
-   `${TWB_DUCKDNS_DOMAIN}.duckdns.org` and reverse-proxies to `:8000`
-6. Prints the verification curls
+### Run the bootstrap
 
-### Point the GitHub Pages frontend at the new backend
+Download the script from the repository's main branch, then run it with sudo.
+Read the DuckDNS token interactively to avoid putting it in shell history:
 
-In `.github/workflows/deploy.yml`, change `VITE_API_BASE` from
-`http://localhost:8000/api` to `https://varneya-bikes.duckdns.org/api`,
-push to `main`, and the deploy workflow rebuilds + publishes. Visitors no
-longer need a local backend running — your Oracle VM serves everyone.
+```bash
+curl -fsSL https://raw.githubusercontent.com/varneya/india-two-wheeler-dashboard/main/scripts/setup_oracle_vm.sh -o /tmp/setup_oracle_vm.sh
+read -r -s -p 'DuckDNS token: ' TWB_DUCKDNS_TOKEN; echo
+export TWB_DUCKDNS_TOKEN
+sudo --preserve-env=TWB_DUCKDNS_TOKEN env TWB_DUCKDNS_DOMAIN=varneya-bikes bash /tmp/setup_oracle_vm.sh
+unset TWB_DUCKDNS_TOKEN
+```
 
-### Operational caveats
+This creates a dedicated `twowheeler` service account, clones to
+`/opt/twowheeler`, installs the core dependencies, restarts the API, configures
+Caddy, and checks both localhost and public HTTPS health. Existing server edits
+or divergent commits stop deployment for manual resolution. Ollama and its
+models are installed only with `TWB_INSTALL_OLLAMA=true`.
 
-- **Provider policy and capacity:** consult your provider's current terms for
-  idle-instance reclamation and provisioning limits. Keep backups of
-  `backend/sales.db` and any PDFs you need.
-- **Ops**: the script is idempotent — re-run it any time you change the
-  DuckDNS domain, Anthropic key, or want to upgrade after `git pull`.
-- **Logs**: `journalctl -u twowheeler-backend -f` for the API,
-  `journalctl -u caddy -f` for TLS issues.
+The optional `themes-batch.timer` is installed/enabled when `THEMES_LLM_BACKEND`
+is set in `/etc/twowheeler/env`. It processes bikes with new/changed reviews,
+keeps successful results in SQLite, spaces requests by at least 90 seconds,
+and caps attempts across reruns at 10 per UTC day by default. A provider error
+halts that day's batch. Groq requests sample at most 20 reviews and cap generated
+tokens at 4096; account-specific token limits still apply. The checkpoint under
+`backend/.cache/themes-batch` must persist across updates. Removing the backend
+setting and rerunning setup disables the timer.
+
+### Connect GitHub Pages
+
+Set the repository **Actions variable** `VITE_API_BASE` to your verified URL,
+for example `https://varneya-bikes.duckdns.org/api`, then run the Pages workflow:
+
+```bash
+gh variable set VITE_API_BASE --repo varneya/india-two-wheeler-dashboard --body https://varneya-bikes.duckdns.org/api
+gh workflow run deploy.yml --repo varneya/india-two-wheeler-dashboard --ref main
+```
+
+Variables are applied at build time. Without this variable the published site
+continues to use the visitor's localhost backend. Visitors can read stored
+results; protected admin actions require your token.
+
+### Data and operations
+
+- Transfer a **SQLite backup**, not a live database file copied without its WAL.
+  Stop the destination backend while replacing its database. Preserve PDF files
+  if required, and restore service-account ownership before restarting.
+- Alternatively, trigger an authenticated refresh to populate a fresh database.
+  Themes are then computed on the nightly schedule.
+- Keep backups off the VM. Always Free instances are subject to availability
+  and idle reclamation; free service is not an uptime guarantee.
+- API logs: `journalctl -u twowheeler-backend -f`; HTTPS logs:
+  `journalctl -u caddy -f`; inference logs: `journalctl -u themes-batch.service`.
+- Optional semantic clustering/forecasting requires `requirements-ml.txt`;
+  the core deployment serves stored results and keyword/TF-IDF/LLM analysis.
+
+Current provider references: [Oracle Always Free resources](https://docs.oracle.com/en-us/iaas/Content/FreeTier/freetier_topic-Always_Free_Resources.htm),
+[Groq account rate limits](https://console.groq.com/docs/rate-limits).
 
 ---
 

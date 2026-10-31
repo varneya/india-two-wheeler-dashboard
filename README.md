@@ -115,10 +115,9 @@ frontend/                   Vite + React 19 + TypeScript
 
 .github/workflows/
   deploy.yml                Builds frontend and publishes to GitHub Pages on
-                            every push touching frontend/. Bakes
-                            VITE_API_BASE=http://localhost:8000/api into the
-                            production build so the hosted UI calls the
-                            visitor's own machine.
+                            every push touching frontend/. Uses repository
+                            variable VITE_API_BASE for a shared backend,
+                            defaulting to http://localhost:8000/api when unset.
 ```
 
 **Data sources:**

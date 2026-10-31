@@ -144,12 +144,16 @@ def _analyze_openai_compatible(
                 "model": model,
                 "messages": [
                     {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": _build_prompt(reviews, subject)},
+                    {"role": "user", "content": _build_prompt(
+                        reviews[:20] if provider == "Groq" else reviews, subject
+                    )},
                 ],
                 "temperature": 0.2,
                 # JSON mode: the model may wrap the array as {"themes": [...]},
                 # which _parse_response unwraps.
                 "response_format": {"type": "json_object"},
+                # Bound each hosted request as well as the nightly job count.
+                **({"max_completion_tokens": 4096} if provider == "Groq" else {}),
             },
             timeout=120,
         )

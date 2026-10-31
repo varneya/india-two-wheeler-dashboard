@@ -1,0 +1,13 @@
+[Unit]
+Description=India Two-Wheeler Dashboard — nightly optional Groq themes timer
+
+[Timer]
+# After refresh-all's 04:30 + up to 1h jitter on the UTC deployment host.
+# The HTTP status check also protects against a long or catch-up refresh.
+OnCalendar=*-*-* 07:00:00 UTC
+RandomizedDelaySec=10m
+Persistent=true
+Unit=themes-batch.service
+
+[Install]
+WantedBy=timers.target
