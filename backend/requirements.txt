@@ -1,21 +1,23 @@
-fastapi
-uvicorn[standard]
-requests
-beautifulsoup4
-anthropic
-python-dotenv
-numpy
-pandas
-scikit-learn
-hdbscan
-umap-learn
-prophet
-psutil
-# Optional: enables EMBEDDING_BACKEND=sentence_transformers (in-process MiniLM,
-# 90 MB model, no Ollama required). Installs torch (~1 GB). Comment out if you
-# only want the Ollama embedding backend and care about install footprint.
-sentence-transformers
+# Core install — everything needed to BOOT the API and run the dashboard's
+# non-ML features: scraping (sales, reviews, specs, brochures, YouTube),
+# sales series + imputation + anomalies, and the keyword / LLM theme methods.
+#
+# The TF-IDF / Semantic / BERTopic theme methods, Prophet forecasting, and
+# the in-process embedding backend additionally need the heavy ML stack:
+#     pip install -r requirements-ml.txt
+#
+# Pinned to the versions this repo is developed and tested against.
+fastapi==0.136.0
+uvicorn[standard]==0.45.0
+requests==2.33.1
+beautifulsoup4==4.14.3
+anthropic==0.96.0
+python-dotenv==1.2.2
+pydantic-settings==2.14.2
+numpy==2.5.1
+pandas==3.0.3
+psutil==7.2.2
 # YouTube transcript scraper (Stage 5). yt-dlp lists channel videos without
 # an API key; youtube-transcript-api pulls auto-generated captions.
-yt-dlp
-youtube-transcript-api
+yt-dlp==2026.7.4
+youtube-transcript-api==1.2.4

@@ -1,7 +1,6 @@
-# Daily kick of the 4-stage scrape pipeline. The companion .timer file
-# fires this nightly. The backend's /api/refresh-all endpoint is idempotent
-# (skips a run if one is already in flight) so missed/overlapping fires
-# are safe.
+# Daily kick of the scrape pipeline. The companion .timer file fires this
+# nightly. The backend's /api/refresh-all endpoint is idempotent (skips a
+# run if one is already in flight) so missed/overlapping fires are safe.
 
 [Unit]
 Description=India Two-Wheeler Dashboard — daily scrape refresh
@@ -10,4 +9,8 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
-ExecStart=/usr/bin/curl -fsS -X POST http://127.0.0.1:8000/api/refresh-all
+# Optional: /etc/twowheeler/env sets ADMIN_TOKEN=... to match the backend's
+# .env. Harmless when absent — with no ADMIN_TOKEN configured server-side,
+# the auth guard is a no-op and the empty header below is ignored.
+EnvironmentFile=-/etc/twowheeler/env
+ExecStart=/usr/bin/curl -fsS -X POST -H "X-Admin-Token: ${ADMIN_TOKEN}" http://127.0.0.1:8000/api/refresh-all

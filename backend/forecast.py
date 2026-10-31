@@ -243,7 +243,14 @@ def fit_and_forecast(
 
     # Lazy import: prophet pulls cmdstanpy + matplotlib (~200 MB), so don't
     # block module import for callers that only need imputation.
-    from prophet import Prophet  # noqa: WPS433
+    try:
+        from prophet import Prophet  # noqa: WPS433
+    except ImportError as ie:
+        # Surfaces via the forecast status endpoint's `error` field.
+        raise RuntimeError(
+            "Forecasting needs the ML extras. Install them with: "
+            f"pip install -r requirements-ml.txt  (missing: {ie.name})"
+        ) from ie
 
     n = len(series)
     yearly_ok = n >= 24  # need ≥2 yearly cycles before yearly seasonality is meaningful

@@ -21,6 +21,8 @@ WorkingDirectory=${TWB_REPO}/backend
 Environment=EXTRA_CORS_ORIGINS=${TWB_ORIGIN_HTTPS}
 Environment=EMBEDDING_BACKEND=${TWB_EMBEDDING_BACKEND}
 EnvironmentFile=-${TWB_REPO}/backend/.env
+# Shared with refresh-all.service; keeps scheduled refresh authentication aligned.
+EnvironmentFile=-/etc/twowheeler/env
 ExecStart=${TWB_REPO}/backend/venv/bin/uvicorn main:app --host 127.0.0.1 --port 8000
 Restart=on-failure
 RestartSec=5

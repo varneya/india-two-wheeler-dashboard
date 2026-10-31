@@ -4,7 +4,7 @@ A self-hosted dashboard that scrapes monthly motorcycle & scooter sales data
 from public Indian sources, owner reviews from **BikeWale, BikeDekho,
 ZigWheels, and r/IndianBikes**, and turns the reviews into themes via five
 different theming methods — keyword rules, TF-IDF clustering, semantic
-embedding clustering, BERTopic, or an LLM (Claude or local Ollama).
+embedding clustering, BERTopic, or an LLM (Claude, Groq, an OpenAI-compatible endpoint, or local Ollama).
 
 Covers ~110 bikes across 15 manufacturers (Yamaha, Honda, Hero, Bajaj, TVS,
 Royal Enfield, Suzuki, KTM, Aprilia, Kawasaki, BMW, Triumph, Ducati, Husqvarna,
@@ -15,9 +15,10 @@ Harley-Davidson).
 **Hosted UI:** <https://varneya.github.io/india-two-wheeler-dashboard/>
 
 The hosted page is the React frontend only — it expects a backend and (for
-LLM/embedding methods) Ollama running on **your own machine**. No data is sent
-to any third-party server (the optional Anthropic Claude API call is the one
-exception, only if you pick the "LLM → Claude" theme method).
+local Ollama methods) Ollama running on **your own machine**. Cloud LLM
+methods send sampled reviews to the selected provider. Groq and generic
+OpenAI-compatible backends are currently configured through the analysis API;
+see [SETUP.md](SETUP.md#6-optional--cloud-or-self-hosted-llm-apis).
 
 On first load the page lands on the **Setup** tab, probes for `localhost:8000`
 (backend) and `localhost:11434` (Ollama), and shows live status pills + the
@@ -62,10 +63,11 @@ hosted-frontend + local-backend deployment topology) see
   - **Semantic Clustering** — Ollama `nomic-embed-text` + HDBSCAN + c-TF-IDF
   - **BERTopic Pipeline** — embeddings → UMAP → HDBSCAN → c-TF-IDF, with
     optional Mistral 7B name refinement
-  - **LLM Analysis** — Claude (API) or any local Ollama model
-- **One-click data refresh** — five-stage pipeline (RushLane discovery →
+  - **LLM Analysis** — Claude or any local Ollama model in the UI; Groq and generic OpenAI-compatible providers through the API
+- **One-click data refresh** — six-stage pipeline (RushLane discovery →
   BikeWale reviews → BikeDekho/ZigWheels/Reddit reviews → AutoPunditz prose +
-  brand totals → YouTube transcripts) with live progress
+  brand totals → YouTube transcripts → specifications and OEM brochures).
+  The specs/brochures stage is available in the API; its dedicated progress UI is pending.
 - **`⌘K` command palette** to search bikes
 - **Light & dark mode**
 - **Setup tab** — live status pills for backend / Ollama / required models,
@@ -94,7 +96,11 @@ backend/                    FastAPI + SQLite (no ORM)
   themes_tfidf.py           Method 2 — TF-IDF + KMeans
   themes_semantic.py        Method 3 — embeddings + HDBSCAN
   themes_bertopic.py        Method 4 — embeddings + UMAP + HDBSCAN + LLM
-  themes_llm.py             Method 5 — Claude or Ollama
+  themes_llm.py             Method 5 — Claude, Ollama, Groq, OpenAI-compatible
+  config.py                 Environment / .env settings
+  auth.py                   Optional shared-backend admin guard
+  oem_brochures.py           Configured OEM discovery and brochure ingestion
+  tests/                    Isolated parser, database, API, and migration tests
   hardware_detector.py      Mac chip detection + Ollama status
   database.py               SQLite schema + migrations
   main.py                   FastAPI routes (CORS allowlists localhost:5173
@@ -103,8 +109,8 @@ backend/                    FastAPI + SQLite (no ORM)
 frontend/                   Vite + React 19 + TypeScript
   src/components/ui/        shadcn/ui primitives
   src/components/           App-specific components (incl. SetupTab.tsx)
-  src/api/client.ts         Shared API_BASE / OLLAMA_BASE (env-driven)
-  src/api/                  Axios + fetch helpers
+  src/api/client.ts         Shared Axios client, admin header, normalized errors
+  src/api/                  Typed helpers using the shared client
   src/hooks/                React Query hooks + theme toggle
 
 .github/workflows/
@@ -144,6 +150,8 @@ Full step-by-step guide (with per-OS commands, troubleshooting, and a
 cd backend
 python3 -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
+# Optional: TF-IDF / semantic / BERTopic / Prophet / MiniLM
+# pip install -r requirements-ml.txt
 uvicorn main:app --reload --port 8000
 
 # Frontend (in a second terminal)
@@ -152,7 +160,8 @@ npm install && npm run dev          # → http://localhost:5173
 
 # Optional: Ollama for local LLM / embeddings
 brew install ollama && ollama serve &
-ollama pull nomic-embed-text mistral:7b
+ollama pull nomic-embed-text
+ollama pull mistral:7b
 ```
 
 ### TL;DR — use the hosted UI with your local backend
@@ -213,7 +222,8 @@ Recharts, TanStack Query, Lucide, Sonner, cmdk
 ## Disclaimer
 
 This project scrapes publicly accessible web pages for personal analysis. It
-respects `robots.txt` for the sites it touches and rate-limits aggressively.
+uses source-specific request pacing. A shared robots.txt enforcement layer
+is not implemented; review source permissions before running collection.
 If you're a publisher and want your site removed, open an issue or pull request.
 
 Not affiliated with Yamaha, Honda, Hero, Bajaj, TVS, RushLane, AutoPunditz,
@@ -222,3 +232,13 @@ BikeWale, BikeDekho, ZigWheels, Reddit, or any other entity mentioned.
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+## Shared hosting and development
+
+Set `ADMIN_TOKEN` before exposing the backend publicly; the nightly refresh
+service must use the same token. Keep provider keys on the server and never
+bake an admin token into a publicly served Vite build. See [SETUP.md](SETUP.md)
+for the configuration, API examples, and development checks.
+
+The specs and brochure endpoints are available in the backend. A dedicated
+specifications/brochures view has not yet been added to the frontend.

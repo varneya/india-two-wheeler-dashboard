@@ -7,7 +7,7 @@
 #   powershell -ExecutionPolicy Bypass -File scripts\install_backend.ps1
 #
 # What it does:
-#   1. Checks for Python 3.10-3.12. If missing, offers to install 3.12 via winget.
+#   1. Checks for Python 3.12+. If missing, offers to install 3.12 via winget.
 #   2. Creates backend\venv if it doesn't exist.
 #   3. Upgrades pip and installs everything in backend\requirements.txt.
 #   4. Prints the command to actually run the server.
@@ -64,10 +64,10 @@ function Get-PythonVersion ($exe) {
 $pyExe = Get-PythonExe
 $pyVer = if ($pyExe) { Get-PythonVersion $pyExe } else { $null }
 
-$needsInstall = -not $pyVer -or $pyVer.major -ne 3 -or $pyVer.minor -lt 10
+$needsInstall = -not $pyVer -or $pyVer.major -ne 3 -or $pyVer.minor -lt 12
 if ($needsInstall) {
     if ($pyVer) {
-        Write-WarnTag "Found Python $($pyVer.raw) but need 3.10+."
+        Write-WarnTag "Found Python $($pyVer.raw) but need 3.12+."
     } else {
         Write-WarnTag "Python 3 not found on PATH."
     }
@@ -80,7 +80,7 @@ if ($needsInstall) {
 
     $resp = Read-Host "Install Python 3.12 via winget now? (y/N)"
     if ($resp -notmatch "^[Yy]") {
-        Write-ErrTag "Aborting. Re-run after installing Python 3.10+ yourself."
+        Write-ErrTag "Aborting. Re-run after installing Python 3.12+ yourself."
         exit 1
     }
 
@@ -93,7 +93,7 @@ if ($needsInstall) {
 
     $pyExe = Get-PythonExe
     $pyVer = if ($pyExe) { Get-PythonVersion $pyExe } else { $null }
-    if (-not $pyVer -or $pyVer.major -ne 3 -or $pyVer.minor -lt 10) {
+    if (-not $pyVer -or $pyVer.major -ne 3 -or $pyVer.minor -lt 12) {
         Write-ErrTag "Python install didn't take effect in this shell. Open a new PowerShell window and re-run this script."
         exit 1
     }
@@ -116,10 +116,17 @@ Write-Step "Step 2 - Creating virtualenv at backend\venv"
 
 $venvPython = Join-Path $venvDir "Scripts\python.exe"
 if (Test-Path $venvPython) {
+    $existingVersion = Get-PythonVersion $venvPython
+    if (-not $existingVersion -or $existingVersion.major -ne 3 -or $existingVersion.minor -lt 12) {
+        Write-ErrTag "Existing backend/venv needs Python 3.12+. Move it aside and re-run."
+        exit 1
+    }
     Write-Ok "venv already exists - reusing"
 } else {
     Write-Info "Running '$($venvCmd -join ' ') -m venv $venvDir'..."
-    & $venvCmd[0] @($venvCmd[1..($venvCmd.Length - 1)] + @("-m", "venv", $venvDir))
+    $venvArgs = @("-m", "venv", $venvDir)
+    if ($venvCmd.Length -gt 1) { $venvArgs = @($venvCmd[1]) + $venvArgs }
+    & $venvCmd[0] @venvArgs
     if ($LASTEXITCODE -ne 0 -or -not (Test-Path $venvPython)) {
         Write-ErrTag "venv creation failed. Check the output above."
         exit 1
@@ -139,8 +146,7 @@ if ($LASTEXITCODE -ne 0) {
     exit 1
 }
 
-Write-Info "Installing requirements.txt (this can take 5-10 minutes the first time -"
-Write-Info "  Prophet, hdbscan, umap-learn, scikit-learn all need wheels)..."
+Write-Info "Installing core requirements.txt (ML extras are optional)..."
 & $venvPython -m pip install -r $reqFile
 if ($LASTEXITCODE -ne 0) {
     Write-ErrTag "Dependency install failed. See the output above."
@@ -148,11 +154,12 @@ if ($LASTEXITCODE -ne 0) {
 }
 Write-Ok "All dependencies installed"
 
-# Quick smoke test - confirm the heavy modules import cleanly.
+# Confirm core modules import without the optional ML stack.
 Write-Info "Smoke-testing imports..."
-& $venvPython -c "import fastapi, sklearn, hdbscan, umap, prophet, psutil; print('imports OK')"
+& $venvPython -c "import fastapi, uvicorn, requests, bs4, anthropic, pydantic_settings, numpy, pandas, psutil, yt_dlp, youtube_transcript_api; print('imports OK')"
 if ($LASTEXITCODE -ne 0) {
-    Write-WarnTag "An import failed - check the trace above. The server may still partially work."
+    Write-ErrTag "A core import failed - check the trace above."
+    exit 1
 }
 
 # -------------------------------------------------------------------
@@ -172,4 +179,5 @@ Write-Host ""
 Write-Host "Or in one line (no activation needed):"
 Write-Host "  $venvPython -m uvicorn main:app --app-dir $backendDir --port 8000"
 Write-Host ""
-Write-Host "Then run scripts\install_ollama.ps1 to set up the LLM side."
+Write-Host "Optional ML methods: $venvPython -m pip install -r $backendDir/requirements-ml.txt"
+Write-Host "Optional local LLM: scripts\install_ollama.ps1"

@@ -1,5 +1,5 @@
 import json as _json
-import re
+from contextlib import closing
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
@@ -52,6 +52,20 @@ _SEGMENT_SEED = [
 def get_conn() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
+    # Per-connection policy. journal_mode=WAL persists in the DB file (set in
+    # init_db), but these three do NOT survive across connections — without
+    # them here, only the init connection ever ran with them:
+    #   synchronous=NORMAL   safe-with-WAL fsync level (big write speedup)
+    #   foreign_keys=ON      enforce the bike_specs/bike_brochures FKs
+    #   busy_timeout         wait out brief writer overlap from the parallel
+    #                        refresh stages instead of raising "locked"
+    try:
+        conn.execute("PRAGMA synchronous=NORMAL")
+        conn.execute("PRAGMA foreign_keys=ON")
+        conn.execute("PRAGMA busy_timeout=15000")
+    except BaseException:
+        conn.close()
+        raise
     return conn
 
 
@@ -71,389 +85,520 @@ def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
     return cur.fetchone() is not None
 
 
-def init_db():
-    with get_conn() as conn:
-        # Enable WAL so the parallel refresh stages (multiple worker threads
-        # writing per-bike rows concurrently) don't block each other on a
-        # single writer lock. WAL allows N readers + 1 writer concurrently
-        # and survives restarts. PRAGMA is idempotent.
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA synchronous=NORMAL")
+def _execute_statements(conn: sqlite3.Connection, script: str):
+    """Execute our static DDL without executescript's implicit COMMIT.
 
-        # ------------- Base tables (idempotent CREATE IF NOT EXISTS) -------------
-        conn.executescript("""
-            CREATE TABLE IF NOT EXISTS bikes (
-                id              TEXT PRIMARY KEY,
-                brand           TEXT NOT NULL,
-                model           TEXT NOT NULL,
-                display_name    TEXT NOT NULL,
-                keywords        TEXT NOT NULL,
-                bikewale_slug   TEXT,
-                bikewale_ok     INTEGER DEFAULT 0,
-                launch_month    TEXT,
-                first_seen_at   TEXT NOT NULL,
-                last_seen_at    TEXT NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS sales_data (
+    Statements in these scripts end on their own line. complete_statement
+    handles quoted semicolons and SQL comments without splitting inside them.
+    """
+    statement = ""
+    for line in script.splitlines(keepends=True):
+        statement += line
+        if sqlite3.complete_statement(statement):
+            conn.execute(statement)
+            statement = ""
+    if statement.strip():
+        conn.execute(statement)
+
+
+def _ensure_schema(conn: sqlite3.Connection):
+    """Create missing tables and add columns without rewriting existing rows."""
+    # ------------- Base tables (idempotent CREATE IF NOT EXISTS) -------------
+    _execute_statements(conn, """
+        CREATE TABLE IF NOT EXISTS bikes (
+            id              TEXT PRIMARY KEY,
+            brand           TEXT NOT NULL,
+            model           TEXT NOT NULL,
+            display_name    TEXT NOT NULL,
+            keywords        TEXT NOT NULL,
+            bikewale_slug   TEXT,
+            bikewale_ok     INTEGER DEFAULT 0,
+            launch_month    TEXT,
+            first_seen_at   TEXT NOT NULL,
+            last_seen_at    TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS sales_data (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            month       TEXT NOT NULL,
+            units_sold  INTEGER NOT NULL,
+            source_url  TEXT,
+            confidence  TEXT DEFAULT 'high',
+            scraped_at  TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS scrape_log (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_at       TEXT NOT NULL,
+            urls_tried   INTEGER DEFAULT 0,
+            urls_success INTEGER DEFAULT 0,
+            error_msg    TEXT
+        );
+        CREATE TABLE IF NOT EXISTS reviews (
+            id             INTEGER PRIMARY KEY AUTOINCREMENT,
+            source         TEXT NOT NULL,
+            post_id        TEXT UNIQUE NOT NULL,
+            username       TEXT,
+            review_text    TEXT,
+            overall_rating REAL,
+            thread_url     TEXT,
+            scraped_at     TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS reviews_log (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_at       TEXT NOT NULL,
+            total_scraped INTEGER DEFAULT 0,
+            error_msg    TEXT
+        );
+        CREATE TABLE IF NOT EXISTS themes_analysis (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            method     TEXT NOT NULL,
+            config     TEXT NOT NULL,
+            themes     TEXT NOT NULL,
+            run_at     TEXT NOT NULL
+        );
+        -- Brand-level monthly wholesale data from AutoPunditz aggregate
+        -- posts. Distinct from `sales_data` (model-level) — this table
+        -- holds the curated brand TOTAL each month, used as the primary
+        -- line on the brand-level chart.
+        CREATE TABLE IF NOT EXISTS wholesale_brand_sales (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            brand_id    TEXT NOT NULL,
+            month       TEXT NOT NULL,
+            units       INTEGER NOT NULL,
+            source      TEXT NOT NULL DEFAULT 'autopunditz',
+            source_url  TEXT,
+            scraped_at  TEXT NOT NULL,
+            UNIQUE(brand_id, month, source)
+        );
+        -- Per-review embedding cache. Lookup key is (post_id, model) so a
+        -- future model swap doesn't accidentally serve stale vectors.
+        CREATE TABLE IF NOT EXISTS review_embeddings (
+            post_id    TEXT NOT NULL,
+            model      TEXT NOT NULL,
+            embedding  BLOB NOT NULL,
+            dim        INTEGER NOT NULL,
+            cached_at  TEXT NOT NULL,
+            PRIMARY KEY (post_id, model)
+        );
+        -- HTTP conditional-GET cache. For each URL we ever fetched, store
+        -- the validators (ETag, Last-Modified) and a SHA256 of the body so
+        -- subsequent fetches can short-circuit on 304 Not Modified or on
+        -- a matching content hash (for hosts that ignore validators).
+        CREATE TABLE IF NOT EXISTS url_cache (
+            url           TEXT PRIMARY KEY,
+            etag          TEXT,
+            last_modified TEXT,
+            content_hash  TEXT,
+            last_status   INTEGER,
+            last_fetched_at TEXT NOT NULL
+        );
+        -- Per-bike-source review cursor: the newest post_id we've seen.
+        -- Lets each review scraper stop pagination early once it hits a
+        -- known post id, instead of always re-walking the full first page.
+        CREATE TABLE IF NOT EXISTS review_cursor (
+            bike_id        TEXT NOT NULL,
+            source         TEXT NOT NULL,
+            last_post_id   TEXT,
+            updated_at     TEXT NOT NULL,
+            PRIMARY KEY (bike_id, source)
+        );
+        -- Stage 6 — YouTube transcripts. video_transcripts holds the full
+        -- transcript + metadata once per video; video_bike_match maps a
+        -- video to one or more bikes (a comparison video maps to many).
+        -- A shadow row in the `reviews` table per (video, bike) feeds the
+        -- existing themes/embedding pipeline for free.
+        CREATE TABLE IF NOT EXISTS video_transcripts (
+            video_id          TEXT PRIMARY KEY,
+            channel_handle    TEXT NOT NULL,
+            channel_name      TEXT NOT NULL,
+            video_url         TEXT NOT NULL,
+            title             TEXT NOT NULL,
+            description       TEXT,
+            duration_s        INTEGER,
+            published_at      TEXT,
+            transcript        TEXT,
+            language          TEXT,
+            -- 'ok' | 'rate_limited' | 'no_captions' | 'pending'
+            transcript_status TEXT NOT NULL DEFAULT 'ok',
+            fetched_at        TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS video_bike_match (
+            video_id  TEXT NOT NULL,
+            bike_id   TEXT NOT NULL,
+            matched_at TEXT NOT NULL,
+            PRIMARY KEY (video_id, bike_id)
+        );
+        -- Per-channel "newest video we've inspected" pointer. Lets the
+        -- YouTube scraper walk a small newest-first window each refresh
+        -- and bail as soon as it hits a video it's already seen, instead
+        -- of re-listing 50 videos per channel every time.
+        CREATE TABLE IF NOT EXISTS youtube_channel_cursor (
+            channel_handle  TEXT PRIMARY KEY,
+            last_video_id   TEXT NOT NULL,
+            last_checked_at TEXT NOT NULL
+        );
+
+        -- ----------------------------------------------------------------
+        -- Variant-level catalogue (Phase 1 of the BikeWale-as-base refactor)
+        -- ----------------------------------------------------------------
+        -- bike_segments: hand-seeded industry-standard segments (cc x body
+        -- style grid). Stable across refreshes; populated once on init.
+        -- Lets the Owner Insights tab compare a bike's reviews against
+        -- siblings in the same segment.
+        CREATE TABLE IF NOT EXISTS bike_segments (
+            segment_id   TEXT PRIMARY KEY,
+            display_name TEXT NOT NULL,
+            body_style   TEXT NOT NULL,
+            cc_min       INTEGER,
+            cc_max       INTEGER,
+            sort_order   INTEGER NOT NULL DEFAULT 100
+        );
+
+        -- bike_variants: every variant currently on sale in India,
+        -- scraped from BikeWale. Rolls up to a parent_model_id (which
+        -- matches the existing `bikes.id` scheme so today's sales data
+        -- attaches without rewrites). One row per variant — Pulsar 150,
+        -- Pulsar N160, Pulsar N250 are three rows that all roll up to
+        -- 'bajaj-pulsar'.
+        CREATE TABLE IF NOT EXISTS bike_variants (
+            variant_id        TEXT PRIMARY KEY,
+            parent_model_id   TEXT NOT NULL,
+            brand_id          TEXT NOT NULL,
+            segment_id        TEXT,
+            display_name      TEXT NOT NULL,
+            displacement_cc   INTEGER,
+            price_onroad      INTEGER,
+            bikewale_slug     TEXT NOT NULL,
+            bikedekho_slug    TEXT,
+            image_url         TEXT,
+            status            TEXT NOT NULL DEFAULT 'on_sale',
+            launch_year       INTEGER,
+            discovered_at     TEXT NOT NULL,
+            last_seen_at      TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_variants_parent
+            ON bike_variants(parent_model_id);
+        CREATE INDEX IF NOT EXISTS idx_variants_segment
+            ON bike_variants(segment_id);
+        CREATE INDEX IF NOT EXISTS idx_variants_brand
+            ON bike_variants(brand_id);
+
+        -- bike_specs: technical specifications per variant per source.
+        -- One row per (variant, source) so BikeWale + OEM specs can sit
+        -- side-by-side and queries can prefer OEM where present.
+        --
+        -- Hybrid shape: ~25 typed columns for the query-hot fields
+        -- (engine cc, power, weight, dimensions, brakes, ABS) + a
+        -- raw_specs_json TEXT blob containing the full categorized
+        -- payload (every field BikeWale exposes — Instrument Cluster,
+        -- Safety & Convenience, Lights, etc.). New spec fields don't
+        -- require migrations; they flow into raw_specs_json.
+        CREATE TABLE IF NOT EXISTS bike_specs (
+            variant_id           TEXT NOT NULL,
+            source               TEXT NOT NULL,
+            source_url           TEXT NOT NULL,
+            scraped_at           TEXT NOT NULL,
+
+            -- Engine
+            engine_cc            INTEGER,
+            max_power_bhp        REAL,
+            max_power_rpm        INTEGER,
+            max_torque_nm        REAL,
+            max_torque_rpm       INTEGER,
+            cylinders            INTEGER,
+            cooling              TEXT,
+            fuel_system          TEXT,
+            transmission         TEXT,
+            gears                INTEGER,
+            starter              TEXT,
+            emission_standard    TEXT,
+            fuel_type            TEXT,
+
+            -- Performance
+            mileage_kmpl         REAL,
+            top_speed_kmph       REAL,
+            fuel_tank_l          REAL,
+
+            -- Dimensions
+            kerb_weight_kg       REAL,
+            seat_height_mm       INTEGER,
+            ground_clearance_mm  INTEGER,
+            wheelbase_mm         INTEGER,
+            length_mm            INTEGER,
+            width_mm             INTEGER,
+            height_mm            INTEGER,
+
+            -- Brakes / ABS
+            front_brake_type     TEXT,
+            front_brake_disc_mm  INTEGER,
+            rear_brake_type      TEXT,
+            rear_brake_disc_mm   INTEGER,
+            abs_type             TEXT,
+
+            -- Full payload (Power & Performance, Brakes & Wheels,
+            -- Suspensions & Chassis, Dimensions, Warranty, plus the
+            -- feature categories) as JSON, structured as:
+            --   { "<category>": { "<field>": {"value": str, "unit": str} } }
+            raw_specs_json       TEXT NOT NULL,
+
+            PRIMARY KEY (variant_id, source),
+            FOREIGN KEY (variant_id) REFERENCES bike_variants(variant_id)
+              ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_bike_specs_cc
+            ON bike_specs(engine_cc);
+        CREATE INDEX IF NOT EXISTS idx_bike_specs_power
+            ON bike_specs(max_power_bhp);
+        CREATE INDEX IF NOT EXISTS idx_bike_specs_weight
+            ON bike_specs(kerb_weight_kg);
+
+        -- bike_brochures: OEM brochure PDFs per variant. The PDF
+        -- itself lives on disk at `local_path` (backend/brochures_cache/
+        -- <sha256>.pdf); we store metadata + content hash only so the
+        -- DB stays small and we can detect republished PDFs.
+        CREATE TABLE IF NOT EXISTS bike_brochures (
+            variant_id        TEXT NOT NULL,
+            brochure_url      TEXT NOT NULL,
+            sha256            TEXT NOT NULL,
+            local_path        TEXT NOT NULL,
+            file_size_bytes   INTEGER NOT NULL,
+            content_type      TEXT,
+            first_seen_at     TEXT NOT NULL,
+            last_seen_at      TEXT NOT NULL,
+            PRIMARY KEY (variant_id, sha256),
+            FOREIGN KEY (variant_id) REFERENCES bike_variants(variant_id)
+              ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_brochures_variant
+            ON bike_brochures(variant_id, last_seen_at DESC);
+    """)
+
+    # ------------- Add bike_id columns (idempotent) -------------
+    for table in ("sales_data", "reviews", "themes_analysis"):
+        if not _column_exists(conn, table, "bike_id"):
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN bike_id TEXT")
+            print(f"[migrate] added bike_id to {table}")
+
+    # ------------- themes_analysis.metrics (idempotent) -------------
+    if not _column_exists(conn, "themes_analysis", "metrics"):
+        conn.execute("ALTER TABLE themes_analysis ADD COLUMN metrics TEXT")
+        print("[migrate] added metrics column to themes_analysis")
+
+
+    # ------------- Add source column to sales_data (idempotent) -------------
+    # Lets us tag rows by where they came from (rushlane, autopunditz, ...).
+    # Defaults to 'rushlane' so all existing data stays attributed correctly.
+    if not _column_exists(conn, "sales_data", "source"):
+        conn.execute(
+            "ALTER TABLE sales_data ADD COLUMN source TEXT NOT NULL DEFAULT 'rushlane'"
+        )
+        print("[migrate] added source column to sales_data (default: rushlane)")
+
+
+def _migrate_1_youtube_cleanup(conn: sqlite3.Connection):
+    """Remove the original YouTube shadow reviews once."""
+    # Version 1 already shipped with this exact one-shot cleanup. Never
+    # reuse its number for schema changes: existing databases may be at 1.
+    deleted_yt = conn.execute("DELETE FROM reviews WHERE source = 'youtube'").rowcount
+    if deleted_yt:
+        print(f"[migrate] removed {deleted_yt} legacy youtube shadow rows from reviews")
+
+
+def _migrate_2_legacy_schema(conn: sqlite3.Connection):
+    """Upgrade all historical unversioned schemas, including version 1 files."""
+    # ------------- Backfill legacy rows -------------
+    for table in ("sales_data", "reviews", "themes_analysis"):
+        updated = conn.execute(
+            f"UPDATE {table} SET bike_id = ? WHERE bike_id IS NULL OR bike_id = ''",
+            (LEGACY_BIKE_ID,),
+        ).rowcount
+        if updated:
+            print(f"[migrate] backfilled {updated} rows in {table} -> {LEGACY_BIKE_ID}")
+
+    # Backfill any pre-existing NULLs (shouldn't exist with NOT NULL DEFAULT,
+    # but safe-guard for any edge case where the column was added without a default).
+    backfilled = conn.execute(
+        "UPDATE sales_data SET source = 'rushlane' WHERE source IS NULL OR source = ''"
+    ).rowcount
+    if backfilled:
+        print(f"[migrate] backfilled source='rushlane' on {backfilled} sales rows")
+
+    # PRAGMA inspection covers inline UNIQUE, table constraints and explicit
+    # indexes, regardless of whitespace, quoting or NOT NULL placement.
+    legacy_unique = False
+    for index in conn.execute("PRAGMA index_list(sales_data)").fetchall():
+        if index["unique"]:
+            columns = tuple(row["name"] for row in conn.execute(
+                "SELECT name FROM pragma_index_info(?) ORDER BY seqno", (index["name"],)
+            ))
+            if columns in (("month",), ("bike_id", "month")):
+                if index["origin"] == "c":
+                    name = index["name"].replace('"', '""')
+                    conn.execute(f'DROP INDEX "{name}"')
+                else:
+                    legacy_unique = True
+    if legacy_unique:
+        print("[migrate] rebuilding sales_data to drop legacy unique constraint")
+        _execute_statements(conn, """
+            CREATE TABLE sales_data_new (
                 id          INTEGER PRIMARY KEY AUTOINCREMENT,
                 month       TEXT NOT NULL,
                 units_sold  INTEGER NOT NULL,
                 source_url  TEXT,
                 confidence  TEXT DEFAULT 'high',
-                scraped_at  TEXT NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS scrape_log (
-                id           INTEGER PRIMARY KEY AUTOINCREMENT,
-                run_at       TEXT NOT NULL,
-                urls_tried   INTEGER DEFAULT 0,
-                urls_success INTEGER DEFAULT 0,
-                error_msg    TEXT
-            );
-            CREATE TABLE IF NOT EXISTS reviews (
-                id             INTEGER PRIMARY KEY AUTOINCREMENT,
-                source         TEXT NOT NULL,
-                post_id        TEXT UNIQUE NOT NULL,
-                username       TEXT,
-                review_text    TEXT,
-                overall_rating REAL,
-                thread_url     TEXT,
-                scraped_at     TEXT NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS reviews_log (
-                id           INTEGER PRIMARY KEY AUTOINCREMENT,
-                run_at       TEXT NOT NULL,
-                total_scraped INTEGER DEFAULT 0,
-                error_msg    TEXT
-            );
-            CREATE TABLE IF NOT EXISTS themes_analysis (
-                id         INTEGER PRIMARY KEY AUTOINCREMENT,
-                method     TEXT NOT NULL,
-                config     TEXT NOT NULL,
-                themes     TEXT NOT NULL,
-                run_at     TEXT NOT NULL
-            );
-            -- Brand-level monthly wholesale data from AutoPunditz aggregate
-            -- posts. Distinct from `sales_data` (model-level) — this table
-            -- holds the curated brand TOTAL each month, used as the primary
-            -- line on the brand-level chart.
-            CREATE TABLE IF NOT EXISTS wholesale_brand_sales (
-                id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                brand_id    TEXT NOT NULL,
-                month       TEXT NOT NULL,
-                units       INTEGER NOT NULL,
-                source      TEXT NOT NULL DEFAULT 'autopunditz',
-                source_url  TEXT,
                 scraped_at  TEXT NOT NULL,
-                UNIQUE(brand_id, month, source)
+                bike_id     TEXT,
+                source      TEXT NOT NULL DEFAULT 'rushlane'
             );
-            -- Per-review embedding cache. Lookup key is (post_id, model) so a
-            -- future model swap doesn't accidentally serve stale vectors.
-            CREATE TABLE IF NOT EXISTS review_embeddings (
-                post_id    TEXT NOT NULL,
-                model      TEXT NOT NULL,
-                embedding  BLOB NOT NULL,
-                dim        INTEGER NOT NULL,
-                cached_at  TEXT NOT NULL,
-                PRIMARY KEY (post_id, model)
-            );
-            -- HTTP conditional-GET cache. For each URL we ever fetched, store
-            -- the validators (ETag, Last-Modified) and a SHA256 of the body so
-            -- subsequent fetches can short-circuit on 304 Not Modified or on
-            -- a matching content hash (for hosts that ignore validators).
-            CREATE TABLE IF NOT EXISTS url_cache (
-                url           TEXT PRIMARY KEY,
-                etag          TEXT,
-                last_modified TEXT,
-                content_hash  TEXT,
-                last_status   INTEGER,
-                last_fetched_at TEXT NOT NULL
-            );
-            -- Per-bike-source review cursor: the newest post_id we've seen.
-            -- Lets each review scraper stop pagination early once it hits a
-            -- known post id, instead of always re-walking the full first page.
-            CREATE TABLE IF NOT EXISTS review_cursor (
-                bike_id        TEXT NOT NULL,
-                source         TEXT NOT NULL,
-                last_post_id   TEXT,
-                updated_at     TEXT NOT NULL,
-                PRIMARY KEY (bike_id, source)
-            );
-            -- Stage 6 — YouTube transcripts. video_transcripts holds the full
-            -- transcript + metadata once per video; video_bike_match maps a
-            -- video to one or more bikes (a comparison video maps to many).
-            -- A shadow row in the `reviews` table per (video, bike) feeds the
-            -- existing themes/embedding pipeline for free.
-            CREATE TABLE IF NOT EXISTS video_transcripts (
-                video_id          TEXT PRIMARY KEY,
-                channel_handle    TEXT NOT NULL,
-                channel_name      TEXT NOT NULL,
-                video_url         TEXT NOT NULL,
-                title             TEXT NOT NULL,
-                description       TEXT,
-                duration_s        INTEGER,
-                published_at      TEXT,
-                transcript        TEXT,
-                language          TEXT,
-                -- 'ok' | 'rate_limited' | 'no_captions' | 'pending'
-                transcript_status TEXT NOT NULL DEFAULT 'ok',
-                fetched_at        TEXT NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS video_bike_match (
-                video_id  TEXT NOT NULL,
-                bike_id   TEXT NOT NULL,
-                matched_at TEXT NOT NULL,
-                PRIMARY KEY (video_id, bike_id)
-            );
-            -- Per-channel "newest video we've inspected" pointer. Lets the
-            -- YouTube scraper walk a small newest-first window each refresh
-            -- and bail as soon as it hits a video it's already seen, instead
-            -- of re-listing 50 videos per channel every time.
-            CREATE TABLE IF NOT EXISTS youtube_channel_cursor (
-                channel_handle  TEXT PRIMARY KEY,
-                last_video_id   TEXT NOT NULL,
-                last_checked_at TEXT NOT NULL
-            );
-
-            -- ----------------------------------------------------------------
-            -- Variant-level catalogue (Phase 1 of the BikeWale-as-base refactor)
-            -- ----------------------------------------------------------------
-            -- bike_segments: hand-seeded industry-standard segments (cc x body
-            -- style grid). Stable across refreshes; populated once on init.
-            -- Lets the Owner Insights tab compare a bike's reviews against
-            -- siblings in the same segment.
-            CREATE TABLE IF NOT EXISTS bike_segments (
-                segment_id   TEXT PRIMARY KEY,
-                display_name TEXT NOT NULL,
-                body_style   TEXT NOT NULL,
-                cc_min       INTEGER,
-                cc_max       INTEGER,
-                sort_order   INTEGER NOT NULL DEFAULT 100
-            );
-
-            -- bike_variants: every variant currently on sale in India,
-            -- scraped from BikeWale. Rolls up to a parent_model_id (which
-            -- matches the existing `bikes.id` scheme so today's sales data
-            -- attaches without rewrites). One row per variant — Pulsar 150,
-            -- Pulsar N160, Pulsar N250 are three rows that all roll up to
-            -- 'bajaj-pulsar'.
-            CREATE TABLE IF NOT EXISTS bike_variants (
-                variant_id        TEXT PRIMARY KEY,
-                parent_model_id   TEXT NOT NULL,
-                brand_id          TEXT NOT NULL,
-                segment_id        TEXT,
-                display_name      TEXT NOT NULL,
-                displacement_cc   INTEGER,
-                price_onroad      INTEGER,
-                bikewale_slug     TEXT NOT NULL,
-                bikedekho_slug    TEXT,
-                image_url         TEXT,
-                status            TEXT NOT NULL DEFAULT 'on_sale',
-                launch_year       INTEGER,
-                discovered_at     TEXT NOT NULL,
-                last_seen_at      TEXT NOT NULL
-            );
-            CREATE INDEX IF NOT EXISTS idx_variants_parent
-                ON bike_variants(parent_model_id);
-            CREATE INDEX IF NOT EXISTS idx_variants_segment
-                ON bike_variants(segment_id);
-            CREATE INDEX IF NOT EXISTS idx_variants_brand
-                ON bike_variants(brand_id);
+            INSERT INTO sales_data_new
+                (id, month, units_sold, source_url, confidence, scraped_at, bike_id, source)
+              SELECT id, month, units_sold, source_url, confidence, scraped_at, bike_id, source
+              FROM sales_data;
+            DROP TABLE sales_data;
+            ALTER TABLE sales_data_new RENAME TO sales_data;
         """)
+    conn.execute("DROP INDEX IF EXISTS idx_sales_bike_month")
 
-        # ------------- Add bike_id columns (idempotent) -------------
-        for table in ("sales_data", "reviews", "themes_analysis"):
-            if not _column_exists(conn, table, "bike_id"):
-                conn.execute(f"ALTER TABLE {table} ADD COLUMN bike_id TEXT")
-                print(f"[migrate] added bike_id to {table}")
+    # ------------- Drop retail_brand_sales (FADA) ----------------------
+    # FADA was removed entirely; the table is no longer maintained and
+    # nothing reads it. Drop on first init after the upgrade so the
+    # schema matches the code.
+    if _table_exists(conn, "retail_brand_sales"):
+        conn.execute("DROP TABLE retail_brand_sales")
+        print("[migrate] dropped retail_brand_sales (FADA removed)")
 
-        # ------------- themes_analysis.metrics (idempotent) -------------
-        if not _column_exists(conn, "themes_analysis", "metrics"):
-            conn.execute("ALTER TABLE themes_analysis ADD COLUMN metrics TEXT")
-            print("[migrate] added metrics column to themes_analysis")
-
-        # ------------- Backfill legacy rows -------------
-        for table in ("sales_data", "reviews", "themes_analysis"):
-            updated = conn.execute(
-                f"UPDATE {table} SET bike_id = ? WHERE bike_id IS NULL OR bike_id = ''",
-                (LEGACY_BIKE_ID,),
-            ).rowcount
-            if updated:
-                print(f"[migrate] backfilled {updated} rows in {table} -> {LEGACY_BIKE_ID}")
-
-        # ------------- Migrate sales_data unique constraint -------------
-        # Old schema had UNIQUE(month). New: UNIQUE(bike_id, month).
-        # SQLite can't drop a UNIQUE constraint defined inline -> rebuild table
-        # if the legacy unique constraint is detected on the `month` column.
-        sd_sql_row = conn.execute(
-            "SELECT sql FROM sqlite_master WHERE type='table' AND name='sales_data'"
-        ).fetchone()
-        sd_sql = (sd_sql_row["sql"] or "") if sd_sql_row else ""
-        # Normalise whitespace and detect "month ... UNIQUE" before the next column
-        sd_sql_norm = " ".join(sd_sql.split())
-        legacy_unique = bool(re.search(r"month\s+\w+\s+UNIQUE", sd_sql_norm))
-        if legacy_unique:
-            print("[migrate] rebuilding sales_data to drop legacy UNIQUE(month)")
-            conn.executescript("""
-                CREATE TABLE sales_data_new (
-                    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                    month       TEXT NOT NULL,
-                    units_sold  INTEGER NOT NULL,
-                    source_url  TEXT,
-                    confidence  TEXT DEFAULT 'high',
-                    scraped_at  TEXT NOT NULL,
-                    bike_id     TEXT
-                );
-                INSERT INTO sales_data_new (id, month, units_sold, source_url, confidence, scraped_at, bike_id)
-                  SELECT id, month, units_sold, source_url, confidence, scraped_at, bike_id FROM sales_data;
-                DROP TABLE sales_data;
-                ALTER TABLE sales_data_new RENAME TO sales_data;
+    # ------------- video_transcripts: add transcript_status + drop ----
+    #                NOT NULL on transcript (rebuild table)
+    if _table_exists(conn, "video_transcripts"):
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(video_transcripts)").fetchall()]
+        transcript_col = next(
+            (r for r in conn.execute("PRAGMA table_info(video_transcripts)").fetchall()
+             if r[1] == "transcript"),
+            None,
+        )
+        transcript_is_required = transcript_col is not None and transcript_col[3] == 1
+        need_rebuild = transcript_is_required or "transcript_status" not in cols
+        if need_rebuild:
+            # Rebuild with the correct shape: transcript NULLABLE, +
+            # transcript_status column. We can't ALTER COLUMN in SQLite,
+            # so create a fresh table and copy rows over.
+            conn.execute("ALTER TABLE video_transcripts RENAME TO video_transcripts_old")
+            conn.execute("""
+                CREATE TABLE video_transcripts (
+                    video_id          TEXT PRIMARY KEY,
+                    channel_handle    TEXT NOT NULL,
+                    channel_name      TEXT NOT NULL,
+                    video_url         TEXT NOT NULL,
+                    title             TEXT NOT NULL,
+                    description       TEXT,
+                    duration_s        INTEGER,
+                    published_at      TEXT,
+                    transcript        TEXT,
+                    language          TEXT,
+                    transcript_status TEXT NOT NULL DEFAULT 'ok',
+                    fetched_at        TEXT NOT NULL
+                )
             """)
-
-        # ------------- Drop retail_brand_sales (FADA) ----------------------
-        # FADA was removed entirely; the table is no longer maintained and
-        # nothing reads it. Drop on first init after the upgrade so the
-        # schema matches the code.
-        if _table_exists(conn, "retail_brand_sales"):
-            conn.execute("DROP TABLE retail_brand_sales")
-            print("[migrate] dropped retail_brand_sales (FADA removed)")
-
-        # ------------- video_transcripts: add transcript_status + drop ----
-        #                NOT NULL on transcript (rebuild table)
-        if _table_exists(conn, "video_transcripts"):
-            cols = [r[1] for r in conn.execute("PRAGMA table_info(video_transcripts)").fetchall()]
-            transcript_col = next(
-                (r for r in conn.execute("PRAGMA table_info(video_transcripts)").fetchall()
-                 if r[1] == "transcript"),
-                None,
-            )
-            transcript_is_required = transcript_col is not None and transcript_col[3] == 1
-            need_rebuild = transcript_is_required or "transcript_status" not in cols
-            if need_rebuild:
-                # Rebuild with the correct shape: transcript NULLABLE, +
-                # transcript_status column. We can't ALTER COLUMN in SQLite,
-                # so create a fresh table and copy rows over.
-                conn.execute("ALTER TABLE video_transcripts RENAME TO video_transcripts_old")
+            # Carry over both schemas (with or without transcript_status)
+            if "transcript_status" in cols:
                 conn.execute("""
-                    CREATE TABLE video_transcripts (
-                        video_id          TEXT PRIMARY KEY,
-                        channel_handle    TEXT NOT NULL,
-                        channel_name      TEXT NOT NULL,
-                        video_url         TEXT NOT NULL,
-                        title             TEXT NOT NULL,
-                        description       TEXT,
-                        duration_s        INTEGER,
-                        published_at      TEXT,
-                        transcript        TEXT,
-                        language          TEXT,
-                        transcript_status TEXT NOT NULL DEFAULT 'ok',
-                        fetched_at        TEXT NOT NULL
-                    )
+                    INSERT INTO video_transcripts
+                      (video_id, channel_handle, channel_name, video_url, title,
+                       description, duration_s, published_at, transcript, language,
+                       transcript_status, fetched_at)
+                    SELECT video_id, channel_handle, channel_name, video_url, title,
+                           description, duration_s, published_at, transcript, language,
+                           transcript_status, fetched_at
+                    FROM video_transcripts_old
                 """)
-                # Carry over both schemas (with or without transcript_status)
-                if "transcript_status" in cols:
-                    conn.execute("""
-                        INSERT INTO video_transcripts
-                          (video_id, channel_handle, channel_name, video_url, title,
+            else:
+                conn.execute("""
+                    INSERT INTO video_transcripts
+                      (video_id, channel_handle, channel_name, video_url, title,
+                       description, duration_s, published_at, transcript, language,
+                       fetched_at)
+                    SELECT video_id, channel_handle, channel_name, video_url, title,
                            description, duration_s, published_at, transcript, language,
-                           transcript_status, fetched_at)
-                        SELECT video_id, channel_handle, channel_name, video_url, title,
-                               description, duration_s, published_at, transcript, language,
-                               transcript_status, fetched_at
-                        FROM video_transcripts_old
-                    """)
-                else:
-                    conn.execute("""
-                        INSERT INTO video_transcripts
-                          (video_id, channel_handle, channel_name, video_url, title,
-                           description, duration_s, published_at, transcript, language,
-                           fetched_at)
-                        SELECT video_id, channel_handle, channel_name, video_url, title,
-                               description, duration_s, published_at, transcript, language,
-                               fetched_at
-                        FROM video_transcripts_old
-                    """)
-                conn.execute("DROP TABLE video_transcripts_old")
-                print("[migrate] rebuilt video_transcripts: transcript nullable + transcript_status column")
+                           fetched_at
+                    FROM video_transcripts_old
+                """)
+            conn.execute("DROP TABLE video_transcripts_old")
+            print("[migrate] rebuilt video_transcripts: transcript nullable + transcript_status column")
 
-        # ------------- Seed bike_segments (idempotent INSERT OR IGNORE) ----
-        # Hand-curated industry-standard segments grouped by cc band x body
-        # style. Sort order keeps related segments together (commuters →
-        # sports → naked → modern-classic → adventure → cruiser → scooters
-        # → electric).
-        for s in _SEGMENT_SEED:
-            conn.execute(
-                """INSERT OR IGNORE INTO bike_segments
-                     (segment_id, display_name, body_style, cc_min, cc_max, sort_order)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
-                (
-                    s["segment_id"], s["display_name"], s["body_style"],
-                    s.get("cc_min"), s.get("cc_max"), s["sort_order"],
-                ),
-            )
 
-        # ------------- Drop YouTube shadow rows from `reviews` -------------
-        # YouTube transcripts are no longer shadow-inserted into `reviews`.
-        # Existing rows are harmless (not refreshed) but skew the themes
-        # pipeline output, so we delete them here as a one-shot cleanup.
-        deleted_yt = conn.execute(
-            "DELETE FROM reviews WHERE source = 'youtube'"
-        ).rowcount
-        if deleted_yt:
-            print(f"[migrate] removed {deleted_yt} legacy youtube shadow rows from reviews")
+def _ensure_indexes_and_seeds(conn: sqlite3.Connection):
+    """Ensure current indexes and seed rows without replacing existing data."""
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_sales_bike_month_source "
+        "ON sales_data(bike_id, month, source)"
+    )
 
-        # ------------- Add source column to sales_data (idempotent) -------------
-        # Lets us tag rows by where they came from (rushlane, autopunditz, ...).
-        # Defaults to 'rushlane' so all existing data stays attributed correctly.
-        if not _column_exists(conn, "sales_data", "source"):
-            conn.execute(
-                "ALTER TABLE sales_data ADD COLUMN source TEXT NOT NULL DEFAULT 'rushlane'"
-            )
-            print("[migrate] added source column to sales_data (default: rushlane)")
-
-        # Backfill any pre-existing NULLs (shouldn't exist with NOT NULL DEFAULT,
-        # but safe-guard for any edge case where the column was added without a default).
-        backfilled = conn.execute(
-            "UPDATE sales_data SET source = 'rushlane' WHERE source IS NULL OR source = ''"
-        ).rowcount
-        if backfilled:
-            print(f"[migrate] backfilled source='rushlane' on {backfilled} sales rows")
-
-        # Unique index: (bike_id, month, source) — same bike-month from two
-        # sources is allowed. Drop the older 2-column index if present so the
-        # new 3-column one takes over.
-        existing_idx = conn.execute(
-            "SELECT name FROM sqlite_master "
-            "WHERE type='index' AND tbl_name='sales_data' AND name='idx_sales_bike_month'"
-        ).fetchone()
-        if existing_idx:
-            conn.execute("DROP INDEX idx_sales_bike_month")
-            print("[migrate] dropped legacy idx_sales_bike_month (2-column)")
+    # ------------- Seed bike_segments (idempotent INSERT OR IGNORE) ----
+    # Hand-curated industry-standard segments grouped by cc band x body
+    # style. Sort order keeps related segments together (commuters →
+    # sports → naked → modern-classic → adventure → cruiser → scooters
+    # → electric).
+    for s in _SEGMENT_SEED:
         conn.execute(
-            "CREATE UNIQUE INDEX IF NOT EXISTS idx_sales_bike_month_source "
-            "ON sales_data(bike_id, month, source)"
+            """INSERT OR IGNORE INTO bike_segments
+                 (segment_id, display_name, body_style, cc_min, cc_max, sort_order)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (
+                s["segment_id"], s["display_name"], s["body_style"],
+                s.get("cc_min"), s.get("cc_max"), s["sort_order"],
+            ),
         )
 
-        # ------------- Seed XSR 155 bike row if missing -------------
-        if not conn.execute("SELECT 1 FROM bikes WHERE id = ?", (LEGACY_BIKE_ID,)).fetchone():
-            now = datetime.now(timezone.utc).isoformat()
-            conn.execute(
-                """INSERT INTO bikes
-                   (id, brand, model, display_name, keywords, bikewale_slug,
-                    bikewale_ok, launch_month, first_seen_at, last_seen_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (
-                    LEGACY_BIKE_ID,
-                    "Yamaha",
-                    "XSR 155",
-                    "Yamaha XSR 155",
-                    _json.dumps(["XSR 155", "XSR"]),
-                    "yamaha-bikes/xsr-155",
-                    1,
-                    "2025-11",
-                    now, now,
-                ),
-            )
-            print(f"[migrate] seeded bike row: {LEGACY_BIKE_ID}")
+    # ------------- Seed XSR 155 bike row if missing -------------
+    if not conn.execute("SELECT 1 FROM bikes WHERE id = ?", (LEGACY_BIKE_ID,)).fetchone():
+        now = datetime.now(timezone.utc).isoformat()
+        conn.execute(
+            """INSERT INTO bikes
+               (id, brand, model, display_name, keywords, bikewale_slug,
+                bikewale_ok, launch_month, first_seen_at, last_seen_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                LEGACY_BIKE_ID,
+                "Yamaha",
+                "XSR 155",
+                "Yamaha XSR 155",
+                _json.dumps(["XSR 155", "XSR"]),
+                "yamaha-bikes/xsr-155",
+                1,
+                "2025-11",
+                now, now,
+            ),
+        )
+        print(f"[migrate] seeded bike row: {LEGACY_BIKE_ID}")
+
+
+# Append new migrations with increasing numbers; never renumber shipped ones.
+_MIGRATIONS = (
+    (1, _migrate_1_youtube_cleanup),
+    (2, _migrate_2_legacy_schema),
+)
+
+
+def init_db():
+    """Ensure schema and apply pending upgrades atomically, then close.
+
+    WAL is a persistent connection setting and must be selected outside the
+    transaction. BEGIN IMMEDIATE serializes concurrent initializers before
+    they read user_version. All schema/data changes and version marks commit
+    together; a failure leaves the previous version retryable.
+    """
+    with closing(get_conn()) as conn:
+        conn.execute("PRAGMA journal_mode=WAL")
+        with conn:
+            conn.execute("BEGIN IMMEDIATE")
+            version = conn.execute("PRAGMA user_version").fetchone()[0]
+            if version > _MIGRATIONS[-1][0]:
+                raise RuntimeError(f"Database version {version} is newer than supported")
+            _ensure_schema(conn)
+            for target, migrate in _MIGRATIONS:
+                if version < target:
+                    migrate(conn)
+                    conn.execute(f"PRAGMA user_version = {target}")
+            _ensure_indexes_and_seeds(conn)
 
 
 # ---------------------------------------------------------------------------
@@ -517,13 +662,26 @@ def get_bike(bike_id: str) -> dict | None:
 
 
 def delete_bike(bike_id: str) -> int:
-    """Delete a bike + all its sales/reviews/themes. Returns rows removed."""
+    """Delete an analytics bike and its sales, reviews (and their
+    cached embeddings), themes, review cursors, video-bike matches.
+    The separately scraped variant catalogue and its specs/brochures survive:
+    parent_model_id is a grouping key, not an ownership foreign key to bikes.
+    Returns rows removed."""
     with get_conn() as conn:
+        # Embeddings first — they're keyed by the reviews' post_ids, which
+        # are gone once the reviews are deleted.
+        n_emb = conn.execute(
+            """DELETE FROM review_embeddings WHERE post_id IN
+                 (SELECT post_id FROM reviews WHERE bike_id = ?)""",
+            (bike_id,),
+        ).rowcount
         n_sales = conn.execute("DELETE FROM sales_data WHERE bike_id = ?", (bike_id,)).rowcount
         n_reviews = conn.execute("DELETE FROM reviews WHERE bike_id = ?", (bike_id,)).rowcount
         n_themes = conn.execute("DELETE FROM themes_analysis WHERE bike_id = ?", (bike_id,)).rowcount
+        n_cursors = conn.execute("DELETE FROM review_cursor WHERE bike_id = ?", (bike_id,)).rowcount
+        n_matches = conn.execute("DELETE FROM video_bike_match WHERE bike_id = ?", (bike_id,)).rowcount
         conn.execute("DELETE FROM bikes WHERE id = ?", (bike_id,))
-    return n_sales + n_reviews + n_themes
+    return n_sales + n_reviews + n_themes + n_cursors + n_matches + n_emb
 
 
 def get_all_bikes() -> list[dict]:
@@ -1397,5 +1555,115 @@ def list_variants(
                FROM bike_variants {where}
                ORDER BY brand_id, parent_model_id, displacement_cc""",
             params,
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# Specs & brochures
+# ---------------------------------------------------------------------------
+
+# Columns of bike_specs that the scraper derives from raw_specs_json.
+# Listed once so `upsert_bike_spec` and the SQL stay in sync.
+_SPEC_TYPED_COLS = (
+    "engine_cc", "max_power_bhp", "max_power_rpm", "max_torque_nm",
+    "max_torque_rpm", "cylinders", "cooling", "fuel_system",
+    "transmission", "gears", "starter", "emission_standard", "fuel_type",
+    "mileage_kmpl", "top_speed_kmph", "fuel_tank_l",
+    "kerb_weight_kg", "seat_height_mm", "ground_clearance_mm", "wheelbase_mm",
+    "length_mm", "width_mm", "height_mm",
+    "front_brake_type", "front_brake_disc_mm", "rear_brake_type",
+    "rear_brake_disc_mm", "abs_type",
+)
+
+
+def upsert_bike_spec(
+    variant_id: str,
+    source: str,
+    source_url: str,
+    typed: dict,
+    raw_specs_json: str,
+):
+    """Upsert spec row for a (variant, source). `typed` is a dict whose keys
+    are a subset of _SPEC_TYPED_COLS; missing keys are stored as NULL.
+    `raw_specs_json` is the full categorised payload as a JSON string."""
+    now = datetime.now(timezone.utc).isoformat()
+    cols = ("variant_id", "source", "source_url", "scraped_at",
+            *_SPEC_TYPED_COLS, "raw_specs_json")
+    values = [
+        variant_id, source, source_url, now,
+        *(typed.get(c) for c in _SPEC_TYPED_COLS),
+        raw_specs_json,
+    ]
+    placeholders = ", ".join("?" * len(cols))
+    col_list = ", ".join(cols)
+    update_set = ", ".join(
+        f"{c} = excluded.{c}"
+        for c in cols if c not in ("variant_id", "source")
+    )
+    with get_conn() as conn:
+        conn.execute(
+            f"""INSERT INTO bike_specs ({col_list}) VALUES ({placeholders})
+                ON CONFLICT(variant_id, source) DO UPDATE SET {update_set}""",
+            values,
+        )
+
+
+def get_bike_specs(variant_id: str, source: str | None = None) -> list[dict]:
+    """Fetch spec row(s) for a variant. If source is omitted, returns all
+    sources for the variant (BikeWale + any OEM-direct rows)."""
+    with get_conn() as conn:
+        if source:
+            rows = conn.execute(
+                "SELECT * FROM bike_specs WHERE variant_id = ? AND source = ?",
+                (variant_id, source),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM bike_specs WHERE variant_id = ? ORDER BY source",
+                (variant_id,),
+            ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def upsert_brochure(
+    variant_id: str,
+    brochure_url: str,
+    sha256: str,
+    local_path: str,
+    file_size_bytes: int,
+    content_type: str | None = None,
+):
+    """Upsert a brochure entry. Re-saving the same sha256 just bumps
+    last_seen_at; a new sha256 inserts a new row (i.e. OEM republished)."""
+    now = datetime.now(timezone.utc).isoformat()
+    with get_conn() as conn:
+        conn.execute(
+            """INSERT INTO bike_brochures
+                 (variant_id, brochure_url, sha256, local_path,
+                  file_size_bytes, content_type, first_seen_at, last_seen_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(variant_id, sha256) DO UPDATE SET
+                 brochure_url = excluded.brochure_url,
+                 local_path = excluded.local_path,
+                 file_size_bytes = excluded.file_size_bytes,
+                 content_type = COALESCE(excluded.content_type, bike_brochures.content_type),
+                 last_seen_at = excluded.last_seen_at""",
+            (variant_id, brochure_url, sha256, local_path,
+             file_size_bytes, content_type, now, now),
+        )
+
+
+def list_brochures(variant_id: str) -> list[dict]:
+    """All brochures known for a variant, most-recently-seen first."""
+    with get_conn() as conn:
+        rows = conn.execute(
+            """SELECT variant_id, brochure_url, sha256, local_path,
+                      file_size_bytes, content_type,
+                      first_seen_at, last_seen_at
+               FROM bike_brochures
+               WHERE variant_id = ?
+               ORDER BY last_seen_at DESC""",
+            (variant_id,),
         ).fetchall()
     return [dict(r) for r in rows]

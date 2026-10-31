@@ -32,6 +32,7 @@ export interface ThemesResult {
 
 export interface ThemesStatus {
   running: boolean
+  error?: string | null
   total_analyses: number
   last_method: string | null
   last_run_at: string | null

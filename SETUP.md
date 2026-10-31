@@ -11,7 +11,8 @@ This guide walks you through installing everything needed to run the India Two-W
 If you don't want to clone & build the frontend yourself, the hosted bundle at
 **<https://varneya.github.io/india-two-wheeler-dashboard/>** does it for you.
 The UI runs in your browser; the data scrapers, SQLite store, and ML/LLM
-inference all run on **your** machine.
+inference run on **your** machine by default. Cloud LLM backends send the sampled
+review text to the configured provider.
 
 1. Open the URL above. It auto-lands on the **Setup** tab and shows live
    status pills (Backend / Ollama / Models).
@@ -26,9 +27,9 @@ inference all run on **your** machine.
    tabs come alive.
 
 The hosted frontend bundles a build-time `VITE_API_BASE=http://localhost:8000/api`,
-so it always calls *your* machine — never a third-party server. (The optional
-Anthropic Claude API call, only triggered by the "LLM → Claude" theme method,
-is the one exception.)
+so dashboard requests go to your local backend. Claude is selectable in the UI;
+Groq and generic OpenAI-compatible inference are currently selected through
+the analysis API (Section 6). Ollama is optional for browsing and keyword analysis.
 
 ---
 
@@ -39,10 +40,11 @@ Pick the row that matches what you want and install only those sections.
 | You want to... | Sections needed |
 |---|---|
 | Browse sales charts, reviews, influencer videos | 1, 2, 3, 4 |
-| Run keyword / TF-IDF theming | 1, 2, 3, 4 |
-| Run semantic / BERTopic theming (local embeddings) | 1, 2, 3, 4, **5** |
+| Run keyword theming | 1, 2, 3, 4 |
+| Run TF-IDF theming / Prophet forecasting | 1, 2, 3 (+ **3c**), 4 |
+| Run semantic / BERTopic theming (local embeddings) | 1, 2, 3 (+ **3c**), 4, **5** |
 | Run LLM theming on your machine | 1, 2, 3, 4, **5** |
-| Run LLM theming via Anthropic Claude | 1, 2, 3, 4, **6** |
+| Run LLM theming via a cloud API (Claude / Groq / OpenAI-compatible) | 1, 2, 3, 4, **6** |
 | **The full experience (all 5 methods)** | **1–6** |
 
 ---
@@ -51,8 +53,8 @@ Pick the row that matches what you want and install only those sections.
 
 | Tool | Minimum version | Check |
 |---|---|---|
-| **Python** | 3.10+ | `python3 --version` |
-| **Node.js** | 20+ | `node --version` |
+| **Python** | 3.12+ (required by pinned NumPy) | `python3 --version` |
+| **Node.js** | 20.19+ or 22.12+ (Vite 8) | `node --version` |
 | **npm** | 10+ (ships with Node) | `npm --version` |
 | **Git** | any recent | `git --version` |
 
@@ -87,7 +89,7 @@ cd india-two-wheeler-dashboard
 
 ## 3. Backend (FastAPI + Python)
 
-> **Recommended: bundled bootstrap scripts.** They check Python version, offer to install Python 3.12 if missing (Homebrew on macOS, apt on Debian/Ubuntu, winget on Windows), create the venv, upgrade pip, and `pip install -r requirements.txt` in one shot. Idempotent — safe to re-run.
+> **Recommended: bundled bootstrap scripts.** They check Python version, offer to install Python 3.12 if missing (Homebrew on macOS, apt on Debian/Ubuntu, winget on Windows), create the venv, upgrade pip, and `pip install -r requirements.txt` (the core set) in one shot. Idempotent — safe to re-run. Add the ML extras afterwards if you need them (Section 3c).
 >
 > **macOS / Linux:**
 > ```bash
@@ -115,23 +117,24 @@ source venv/bin/activate          # macOS / Linux
 
 ### 3b. Install Python packages
 
-The bundled `requirements.txt` covers core deps. The full list (including ML deps used by `themes_semantic` and `themes_bertopic`) is:
+Install the pinned core dependencies from the activated backend environment:
 
 ```bash
-pip install \
-  fastapi \
-  "uvicorn[standard]" \
-  requests \
-  beautifulsoup4 \
-  anthropic \
-  python-dotenv \
-  numpy \
-  pandas \
-  scikit-learn \
-  hdbscan \
-  umap-learn \
-  prophet
+python -m pip install -r requirements.txt
 ```
+
+Core supports scraping, sales history/imputation, keyword themes, and LLM
+API calls. It does not install Prophet or the clustering/embedding stack.
+
+### 3c. Optional ML dependencies
+
+```bash
+python -m pip install -r requirements-ml.txt
+```
+
+This adds TF-IDF, semantic clustering, BERTopic, Prophet, and in-process
+sentence-transformers embeddings. Without these extras, those methods report
+an installation message; the rest of the API still starts normally.
 
 **Package roles:**
 
@@ -142,7 +145,7 @@ pip install \
 | `requests` | scrapers, themes_embeddings | HTTP client (RushLane, BikeWale, BikeDekho, ZigWheels, Reddit, Ollama) |
 | `beautifulsoup4` | `scraper.py`, `reviews_scraper.py` | HTML parsing |
 | `anthropic` | `themes_llm.py` | Claude API client |
-| `python-dotenv` | `main.py` | Load `.env` |
+| `pydantic-settings`, `python-dotenv` | `config.py` | Load `backend/.env`; process environment values take precedence |
 | `numpy` | embeddings, clustering, forecast | Numerical arrays |
 | `pandas` | `forecast.py` | Period-indexed monthly series |
 | `scikit-learn` | `themes_tfidf.py`, fallback in semantic | TF-IDF, KMeans, silhouette |
@@ -276,18 +279,57 @@ Local-only setups don't need this — `localhost:5173` and `localhost:8000` are 
 
 ---
 
-## 6. Optional — Anthropic Claude API
+## 6. Optional — cloud or self-hosted LLM APIs
 
-Required only for: **LLM theming → backend = Claude**.
+Copy `backend/.env.example` to `backend/.env` if the latter does not already
+exist, then edit it. Keep existing keys when changing settings. Restart the
+backend after changing configuration.
 
-1. Get an API key from <https://console.anthropic.com/settings/keys>
-2. Create `backend/.env`:
+- **Claude:** set `ANTHROPIC_API_KEY`; optionally override `CLAUDE_MODEL`.
+  Select Claude in Owner Insights → LLM.
+- **Groq:** set `GROQ_API_KEY`. The analysis API accepts
+  `config.backend = "groq:<model-id>"`; choose a model available to your account.
+- **Other OpenAI-compatible servers:** set `OPENAI_COMPAT_BASE_URL` including
+  its `/v1` path and, if required, `OPENAI_COMPAT_API_KEY`. Use
+  `config.backend = "openai:<model-id>"`. Keyless local endpoints are supported.
+- **Ollama:** use `config.backend = "ollama:<model>"`; its address is configured
+  with `OLLAMA_BASE_URL` (default `http://localhost:11434`).
+
+Groq and generic OpenAI-compatible providers are supported by the backend;
+there is currently no dedicated provider selector for them in the UI. For
+example, from a shell with `ADMIN_TOKEN` set when the server requires it:
 
 ```bash
-echo 'ANTHROPIC_API_KEY=sk-ant-...' > backend/.env
+curl --fail-with-body -X POST http://localhost:8000/api/bikes/tvs-jupiter/themes/analyze \
+  -H 'Content-Type: application/json' \
+  -H "X-Admin-Token: ${ADMIN_TOKEN}" \
+  -d '{"method":"llm","config":{"backend":"groq:YOUR_MODEL_ID"},"pool_scope":"bike"}'
 ```
 
-The backend uses the `claude-sonnet-4-6` model with prompt caching enabled. Cost is typically a few cents per analysis run.
+Poll `/api/bikes/tvs-jupiter/themes/status`, then read
+`/api/bikes/tvs-jupiter/themes`. Provider credentials stay in the backend.
+Cloud LLM requests send sampled review text to the chosen provider; usage is
+subject to that provider's pricing and limits.
+
+### Shared backend authentication
+
+For local use, leaving `ADMIN_TOKEN` empty preserves the local workflow.
+Before exposing a shared backend, set a long random token (`openssl rand -hex 32`)
+on the server. Refresh, cleanup, analysis, model downloads, and hardware probes
+then require `X-Admin-Token`; reads of saved sales/reviews/themes stay public.
+Forecast reads can still start CPU work, so this guard is not a complete
+public traffic or resource-limit policy.
+
+For an owner browser, set `localStorage.setItem('twd_admin_token', 'YOUR_TOKEN')`
+in that site's developer console and reload. Remove it with
+`localStorage.removeItem('twd_admin_token')` and reload to return to public access.
+**Never put `VITE_ADMIN_TOKEN` or provider keys in a public frontend build**:
+build-time Vite variables are included in downloadable JavaScript.
+
+On the VM, both backend and nightly refresh units read `/etc/twowheeler/env`.
+Create it with mode `600` and put `ADMIN_TOKEN=...` there before starting services.
+This shared environment file overrides the backend `.env` token so the timer
+and backend use the same credential. Provider keys may also be placed there.
 
 ---
 
@@ -348,7 +390,7 @@ First-time launch will show no data — click the **Data Refresh** tab and run a
 ## Troubleshooting
 
 **`ImportError: hdbscan` / `umap` not found**
-You skipped them in Section 3b. Re-run the full `pip install` block.
+Install the ML extras from Section 3c: `python -m pip install -r requirements-ml.txt`.
 
 **`hdbscan` install fails on macOS**
 Run `xcode-select --install`, then retry. If still failing, try `pip install hdbscan --no-build-isolation`.
@@ -370,9 +412,10 @@ Find the offender: `lsof -ti :8000 | xargs kill` (macOS / Linux) or use `netstat
 ## Hosting the backend on Oracle Cloud (Always Free)
 
 If you want the backend reachable 24/7 from any device — not just your laptop —
-the cheapest path is an **Oracle Cloud Always-Free ARM Ampere VM** (2 OCPU /
-12 GB RAM, no monthly charge ever). The bundled bootstrap script does
-everything that can be automated end-to-end on the VM in one shot.
+the bundled bootstrap targets an Ubuntu VM, including Oracle ARM instances.
+Confirm current pricing, free-tier eligibility, and available capacity with
+your provider before provisioning. The script installs the core backend and
+Ollama; install ML extras separately if you need clustering or forecasting.
 
 ### One-time prerequisites you do yourself (~30 min)
 
@@ -386,7 +429,9 @@ everything that can be automated end-to-end on the VM in one shot.
    a subdomain (e.g. `varneya-bikes`), copy your DuckDNS token, and set the
    subdomain's A record to your VM's public IP.
 
-3. **SSH into the VM** as a sudo-capable user.
+3. **SSH into the VM** as a sudo-capable user. Before running the bootstrap,
+   create `/etc/twowheeler/env` with mode `600` and an `ADMIN_TOKEN` as described
+   in Section 6. The script preserves this file and both services read it.
 
 ### Run the bootstrap (~10–20 min, mostly model downloads)
 
@@ -394,7 +439,6 @@ everything that can be automated end-to-end on the VM in one shot.
 sudo \
   TWB_DUCKDNS_DOMAIN=varneya-bikes \
   TWB_DUCKDNS_TOKEN=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx \
-  TWB_ANTHROPIC_KEY=sk-ant-...  \    # optional — only needed for the Claude theme method
   bash <(curl -fsSL https://raw.githubusercontent.com/varneya/india-two-wheeler-dashboard/main/scripts/setup_oracle_vm.sh)
 ```
 
@@ -402,7 +446,7 @@ The script:
 
 1. `apt install`s Python 3.12, git, Caddy, Ollama
 2. Clones the repo to `/opt/twowheeler` and runs `scripts/install_backend.sh` (venv + pip)
-3. Pulls `nomic-embed-text` + `mistral:7b` (~4.7 GB)
+3. Pulls `nomic-embed-text` + `qwen3:8b` by default
 4. Writes systemd units for the backend, the daily scrape refresh, and the
    DuckDNS A-record updater; enables them all
 5. Drops a Caddyfile that terminates TLS (Let's Encrypt via HTTP-01) for
@@ -418,12 +462,9 @@ longer need a local backend running — your Oracle VM serves everyone.
 
 ### Operational caveats
 
-- **Oracle reclaims Always-Free instances from accounts that never spend
-  a cent.** Spin up a $0.01-paid resource for an hour every couple of
-  months, or just have a billing event of any size, to avoid this.
-- **Capacity wall**: ARM Ampere stock is scarce in popular regions. If
-  provisioning fails with "Out of capacity", retry every few hours or pick
-  a quieter region (Mumbai, Hyderabad, Singapore, Seoul tend to have stock).
+- **Provider policy and capacity:** consult your provider's current terms for
+  idle-instance reclamation and provisioning limits. Keep backups of
+  `backend/sales.db` and any PDFs you need.
 - **Ops**: the script is idempotent — re-run it any time you change the
   DuckDNS domain, Anthropic key, or want to upgrade after `git pull`.
 - **Logs**: `journalctl -u twowheeler-backend -f` for the API,
@@ -441,3 +482,18 @@ longer need a local backend running — your Oracle VM serves everyone.
 | `nomic-embed-text` | 274 MB |
 | `mistral:7b` | 4.4 GB |
 | **Full stack** | **~6 GB** |
+
+## Development checks
+
+From the repository root:
+
+```bash
+backend/venv/bin/python -m pip install -r backend/requirements-dev.txt
+backend/venv/bin/python -m pytest backend/tests
+cd frontend
+npm run build
+```
+
+The backend tests use temporary databases and network stubs. They do not
+scrape external sites or call paid inference services. A production build
+checks TypeScript and bundles the frontend; it does not verify live providers.

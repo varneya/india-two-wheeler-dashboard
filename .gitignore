@@ -52,6 +52,8 @@ Thumbs.db
 # Project-specific
 # =============================================================================
 # SQLite DBs are local data; users get fresh data via the Refresh tab on first run.
+/sales.db
+/sales.db-*
 backend/sales.db
 backend/sales.db.bak
 backend/*.db
@@ -63,6 +65,10 @@ backend/*.db-wal
 /tmp/uvicorn.log
 /tmp/vite.log
 /tmp/ollama_*.log
+
+# OEM brochure PDFs — downloaded by hero_brochures et al., hashed in DB.
+# Re-fetchable on the next refresh, so we don't ship them in git.
+backend/brochures_cache/
 
 # Claude Code workflow artefacts
 .claude/

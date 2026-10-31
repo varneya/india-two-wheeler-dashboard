@@ -13,7 +13,9 @@ Two embedding backends, selected via the `EMBEDDING_BACKEND` env var:
 
 The cache table (`review_embeddings`) is keyed by (post_id, model), so the
 two backends co-exist cleanly — switching backends triggers a fresh re-embed
-without poisoning the cache for callers using the other model.
+without poisoning the cache for callers using the other model. `embed_texts`
+takes (post_id, text) PAIRS so the cache key always travels with the text —
+there is no way to call it that silently skips the cache.
 
 Consumed by:
   - themes_semantic.py (embeddings + HDBSCAN + c-TF-IDF)
@@ -22,15 +24,16 @@ Consumed by:
 
 from __future__ import annotations
 
-import os
 import re
 import time
 from collections import Counter
-from typing import Literal
+from typing import Literal, Sequence
 
 import numpy as np
 import requests as http_requests
 from sklearn.feature_extraction.text import CountVectorizer
+
+from config import settings
 
 # ---------------------------------------------------------------------------
 # Backend selection
@@ -38,7 +41,7 @@ from sklearn.feature_extraction.text import CountVectorizer
 
 Backend = Literal["ollama", "sentence_transformers"]
 
-OLLAMA_URL = "http://localhost:11434/api/embeddings"
+OLLAMA_URL = f"{settings.ollama_base_url}/api/embeddings"
 OLLAMA_MODEL = "nomic-embed-text"
 OLLAMA_DIM = 768
 OLLAMA_TIMEOUT = 30
@@ -48,7 +51,7 @@ ST_DIM = 384
 
 
 def _backend() -> Backend:
-    v = (os.environ.get("EMBEDDING_BACKEND") or "ollama").lower()
+    v = (settings.embedding_backend or "ollama").lower()
     if v in ("st", "sentence_transformers", "sentence-transformers", "minilm"):
         return "sentence_transformers"
     return "ollama"
@@ -79,7 +82,7 @@ def check_ollama_ready() -> tuple[bool, str | None]:
     if _backend() != "ollama":
         return True, None
     try:
-        r = http_requests.get("http://localhost:11434/api/tags", timeout=3)
+        r = http_requests.get(f"{settings.ollama_base_url}/api/tags", timeout=3)
         r.raise_for_status()
     except Exception as e:
         return False, f"Ollama is not running. Start it with: ollama serve  ({e})"
@@ -174,19 +177,21 @@ def _embed_one(text: str) -> np.ndarray:
 
 
 def embed_texts(
-    texts: list[str],
-    post_ids: list[str] | None = None,
+    items: Sequence[tuple[str | None, str]],
+    *,
     log_progress: bool = True,
 ) -> np.ndarray:
-    """Embed a list of strings using the active backend (env var
-    `EMBEDDING_BACKEND` = `ollama` (default) | `sentence_transformers`).
+    """Embed reviews given as (post_id, text) pairs using the active backend
+    (`EMBEDDING_BACKEND` = `ollama` (default) | `sentence_transformers`).
     Returns (N, dim) float32 array — dim depends on the active backend.
 
-    If `post_ids` is provided, the per-review embedding cache (DB table
-    `review_embeddings`) is consulted first; only cache misses are computed,
-    and fresh embeddings are written back. The cache is keyed by
-    (post_id, model) so the two backends co-exist without poisoning each
-    other.
+    The per-review embedding cache (DB table `review_embeddings`) is always
+    consulted: only cache misses are computed, and fresh embeddings are
+    written back. The cache key travels WITH the text, so forgetting to
+    pass ids — which used to silently re-embed the whole corpus — is no
+    longer representable. Rows whose post_id is None are computed but
+    never cached. The cache is keyed by (post_id, model) so the two
+    backends co-exist without poisoning each other.
 
     Empty strings are kept in place as zero vectors so the output stays index-
     aligned with the input (callers depend on this for clustering)."""
@@ -194,30 +199,30 @@ def embed_texts(
     model_name = active_model()
     dim = active_dim()
 
+    post_ids = [p for p, _ in items]
+    texts = [t for _, t in items]
+
     n = len(texts)
     out = np.zeros((n, dim), dtype=np.float32)
     if n == 0:
         return out
 
     # Cache hit phase
-    cached_blobs: dict[str, bytes] = {}
-    if post_ids is not None:
-        if len(post_ids) != n:
-            raise ValueError(
-                f"texts ({n}) / post_ids ({len(post_ids)}) length mismatch"
-            )
-        from database import get_cached_embeddings  # noqa: WPS433
-        cached_blobs = get_cached_embeddings(post_ids, model_name)
+    from database import get_cached_embeddings  # noqa: WPS433
+    known_ids = [p for p in post_ids if p is not None]
+    cached_blobs: dict[str, bytes] = (
+        get_cached_embeddings(known_ids, model_name) if known_ids else {}
+    )
 
     miss_indices: list[int] = []
     for i in range(n):
-        pid = post_ids[i] if post_ids is not None else None
+        pid = post_ids[i]
         if pid is not None and pid in cached_blobs:
             out[i] = np.frombuffer(cached_blobs[pid], dtype=np.float32)
         else:
             miss_indices.append(i)
 
-    if log_progress and post_ids is not None:
+    if log_progress:
         print(
             f"[embed/{backend}] cache: {n - len(miss_indices)}/{n} hits, "
             f"{len(miss_indices)} misses"
@@ -236,7 +241,7 @@ def embed_texts(
             batch = _embed_batch_st(miss_texts)
             for j, i in enumerate(miss_indices):
                 out[i] = batch[j]
-                if post_ids is not None and texts[i] and texts[i].strip():
+                if post_ids[i] is not None and texts[i] and texts[i].strip():
                     fresh_pids.append(post_ids[i])
                     fresh_blobs.append(batch[j].tobytes())
             if log_progress:
@@ -249,7 +254,7 @@ def embed_texts(
         for j, i in enumerate(miss_indices):
             emb = _embed_one_ollama(texts[i])
             out[i] = emb
-            if post_ids is not None and texts[i] and texts[i].strip():
+            if post_ids[i] is not None and texts[i] and texts[i].strip():
                 fresh_pids.append(post_ids[i])
                 fresh_blobs.append(emb.tobytes())
             if log_progress and (j + 1) % 25 == 0:

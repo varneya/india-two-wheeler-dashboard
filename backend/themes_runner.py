@@ -18,9 +18,17 @@ import bike_catalogue
 import themes_keyword
 import themes_tfidf
 import themes_llm
-import themes_semantic
-import themes_bertopic
 import themes_quality
+
+# themes_semantic / themes_bertopic are imported lazily inside run_analysis:
+# they pull in the heavy ML stack (numpy, scikit-learn, hdbscan, umap) that
+# the core install (`requirements.txt`) deliberately omits. The keyword and
+# LLM methods must work — and the API must boot — without it. (TF-IDF also
+# needs scikit-learn, but degrades via its own guarded import.)
+_ML_MISSING = (
+    "The {method} method needs the ML extras. Install them with: "
+    "pip install -r requirements-ml.txt  (missing: {detail})"
+)
 
 
 _TOKEN_RE = re.compile(r"[a-z][a-z']+")
@@ -151,17 +159,36 @@ def run_analysis(
 
     elif method == "semantic":
         # "Solid upgrade" — Ollama embeddings + HDBSCAN + c-TF-IDF
+        try:
+            import themes_semantic
+        except ImportError as ie:
+            return {"themes": None,
+                    "error": _ML_MISSING.format(method="Semantic Clustering", detail=ie)}
         min_cs = int(config.get("min_cluster_size", 3))
         result = themes_semantic.analyze(reviews, min_cluster_size=min_cs)
 
     elif method == "bertopic":
         # "Power user" — adds UMAP + optional Mistral name refinement
+        try:
+            import themes_bertopic
+        except ImportError as ie:
+            return {"themes": None,
+                    "error": _ML_MISSING.format(method="BERTopic", detail=ie)}
         llm_naming = bool(config.get("llm_naming", True))
         result = themes_bertopic.analyze(reviews, llm_naming=llm_naming)
 
     elif method == "llm":
         backend = config.get("backend", "claude")
-        result = themes_llm.analyze(reviews, backend=backend)
+        # Tell the LLM what the reviews are actually about (previously the
+        # prompt hardcoded "Yamaha XSR 155" for every bike and brand).
+        if pool_scope == "brand":
+            brand_meta = bike_catalogue.BRANDS.get(brand)
+            brand_display = brand_meta["display"] if brand_meta else brand
+            subject = f"{brand_display} two-wheelers (multiple models)"
+        else:
+            bike_row = database.get_bike(bike_id)
+            subject = f"the {bike_row['display_name']}" if bike_row else None
+        result = themes_llm.analyze(reviews, backend=backend, subject=subject)
 
     else:
         return {"themes": None, "error": f"Unknown method: {method}"}
